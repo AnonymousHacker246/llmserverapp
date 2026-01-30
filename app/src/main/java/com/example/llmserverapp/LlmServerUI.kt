@@ -1,0 +1,271 @@
+package com.example.llmserverapp
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.llmserverapp.ModelManager.listAvailableModels
+import java.io.File
+
+
+object LlmServerUI {
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun LLMServerUI() {
+        val context = LocalContext.current
+
+        val isRunning by ServerController.isRunning.collectAsState()
+        val logs by ServerController.logs.collectAsState()
+
+        val models = remember { mutableStateListOf<File>() }
+        var selectedModel by remember { mutableStateOf<String?>(null) }
+
+        var expanded by remember { mutableStateOf(false) }
+
+        val scrollState = rememberScrollState()
+        val logScrollState = rememberScrollState()
+
+        LaunchedEffect(Unit) {
+            models.clear()
+            models.addAll(listAvailableModels(context))
+        }
+
+        // Auto-scroll logs to bottom when updated
+        LaunchedEffect(logs.size) {
+            logScrollState.animateScrollTo(logScrollState.maxValue)
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp)
+                .verticalScroll(scrollState)
+        ) {
+
+            Text(
+                text = "Local LLM Server",
+                style = MaterialTheme.typography.headlineSmall
+            )
+
+            Spacer(Modifier.height(20.dp))
+
+            // -----------------------------
+            // Model Chooser Card
+            // -----------------------------
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+
+                    Text(
+                        "Model Selection",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    if (models.isEmpty()) {
+                        Text(
+                            "No GGUF models found.",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        val modelNames = models.map { it.name }
+
+                        ExposedDropdownMenuBox(
+                            expanded = expanded,
+                            onExpandedChange = { expanded = !expanded }
+                        ) {
+                            TextField(
+                                value = selectedModel?.let { File(it).name } ?: "",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Choose model") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                                colors = ExposedDropdownMenuDefaults.textFieldColors(),
+                                modifier = Modifier.menuAnchor().fillMaxWidth()
+                            )
+
+                            ExposedDropdownMenu(
+                                expanded = expanded,
+                                onDismissRequest = { expanded = false }
+                            ) {
+                                models.forEach { file ->
+                                    DropdownMenuItem(
+                                        text = { Text(file.name) },
+                                        onClick = {
+                                            selectedModel = file.absolutePath
+                                            expanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                selectedModel?.let { path ->
+                                    val fileName = File(path).name
+                                    ServerController.appendLog("Loading model: $fileName")
+                                    LlamaBridge.unloadModel()
+                                    val result = LlamaBridge.loadModel(path)
+                                    if (result != 0L) {
+                                        ServerController.appendLog("Model Loaded ✓")
+                                        ServerController.modelPath = path
+                                    } else {
+                                        ServerController.appendLog("Model Failed to load (code: $result) ")
+                                    }
+                                }
+                            },
+                            enabled = selectedModel != null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Load Model")
+                        }
+
+                        Button(
+                            onClick = {
+                                ServerController.appendLog("Running benchmark…")
+                                ServerController.runBenchmark()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Run Benchmark")
+                        }
+
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // -----------------------------
+            // Server Controls Card
+            // -----------------------------
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val statusColor =
+                            if (isRunning) Color(0xFF4CAF50) else Color(0xFFF44336)
+
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(statusColor, shape = CircleShape)
+                        )
+
+                        Spacer(Modifier.width(8.dp))
+
+                        Text(
+                            text = if (isRunning) "Server Running" else "Server Stopped",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Button(
+                            onClick = { ServerController.startServer() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Start")
+                        }
+
+                        Spacer(Modifier.width(12.dp))
+
+                        Button(
+                            onClick = { ServerController.stopServer() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Stop")
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // -----------------------------
+            // Logs Card
+            // -----------------------------
+            Text(
+                "Server Logs",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF111111))
+                    .padding(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.verticalScroll(logScrollState)
+                ) {
+                    logs.forEach { log ->
+                        Text(
+                            text = log,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
