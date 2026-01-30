@@ -1,15 +1,33 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+# Android build
+/build/
+/app/build/
+/*/build/
+
+# Gradle
+/.gradle/
+/buildSrc/.gradle/
+gradle-app.setting
+
+# Local config
 local.properties
+
+# Android Studio / IntelliJ
+/.idea/
+/*.iml
+
+# NDK / CMake
+/.externalNativeBuild/
+/app/.cxx/
+/cmake-build-*/
+
+# Logs / temp
+*.log
+*.tmp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Optional: ignore models
+# /app/src/main/assets/*.gguf
+
