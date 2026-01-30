@@ -15,31 +15,107 @@ object LlamaBridge {
     external fun loadModel(path: String): Long
     external fun unloadModel()
 
+    fun benchmarkModel(onLog: (String) -> Unit) {
+    adaptiveBenchmark(
+        passes = 5,
+        prompt = "hello",
+        onLog = onLog
+    )
+}
+
     // IMPORTANT: JNI returns JSON STRING, not LlamaResult
     external fun generateWithStats(prompt: String): String
 
-    fun benchmarkModel(onLog: (String) -> Unit) {
-        val prompt = "hello"
+    data class BenchmarkConfig(
+    var threads: Int = 4,
+    var genTokens: Int = 32,
+    var temp: Float = 0.7f,
+    var topP: Float = 0.9f,
+    var topK: Int = 40
+)
 
-        onLog("Benchmark starting…")
-        onLog("Prompt: $prompt")
+fun adaptiveBenchmark(
+    passes: Int = 5,
+    prompt: String = "hello",
+    onLog: (String) -> Unit
+) {
+    val config = BenchmarkConfig()
+    var bestSpeed = 0.0
+    var bestConfig = config.copy()
+
+    onLog("=== Adaptive Benchmark Starting ===")
+
+    repeat(passes) { pass ->
+        onLog("---- Pass ${pass + 1} ----")
+        onLog("Config: $config")
 
         val start = System.nanoTime()
-        val jsonString = generateWithStats(prompt)
-        val end = System.nanoTime()
-        Log.e("LLAMA_DEBUG", "RAW_JSON = $jsonString")
-        val result = JSONObject(jsonString)
-        val output = result.getString("text")
-        val generatedTokens = result.getInt("generated")
 
-        val elapsedMs = (end - start) / 1_000_000.0
-        val speed = generatedTokens / (elapsedMs / 1000.0)
+        val jsonString = try {
+            LlamaBridge.generateWithStats(prompt)
+        } catch (e: Throwable) {
+            onLog("CRASH: JNI threw exception: ${e.message}")
+            adjustConfigAfterCrash(config, onLog)
+            return@repeat
+        }
 
-        onLog("Benchmark complete ✓")
-        onLog("Generated: \"$output\"")
-        onLog("Time: ${"%.2f".format(elapsedMs)} ms")
-        onLog("Generated tokens: $generatedTokens")
-        onLog("Speed: ${"%.2f".format(speed)} tokens/sec")
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
+
+        val result = try {
+            JSONObject(jsonString)
+        } catch (e: Throwable) {
+            onLog("CRASH: Invalid JSON returned")
+            adjustConfigAfterCrash(config, onLog)
+            return@repeat
+        }
+
+        val tokens = result.optInt("generated", -1)
+        if (tokens <= 0) {
+            onLog("CRASH: No tokens generated")
+            adjustConfigAfterCrash(config, onLog)
+            return@repeat
+        }
+
+        val tps = tokens / (elapsedMs / 1000.0)
+        onLog("Tokens/sec: ${"%.2f".format(tps)}")
+
+        if (tps > bestSpeed) {
+            bestSpeed = tps
+            bestConfig = config.copy()
+        }
+
+        // Optional: adjust config upward if stable
+        config.threads = (config.threads + 1).coerceAtMost(8)
     }
+
+    onLog("=== Benchmark Complete ===")
+    onLog("Best speed: ${"%.2f".format(bestSpeed)} tokens/sec")
+    onLog("Best config: $bestConfig")
 }
 
+fun adjustConfigAfterCrash(config: BenchmarkConfig, onLog: (String) -> Unit) {
+    onLog("Adjusting config after crash...")
+
+    // Reduce threads first
+    if (config.threads > 1) {
+        config.threads--
+        onLog("Reduced threads to ${config.threads}")
+        return
+    }
+
+    // Reduce generation length
+    if (config.genTokens > 8) {
+        config.genTokens /= 2
+        onLog("Reduced genTokens to ${config.genTokens}")
+        return
+    }
+
+    // Reduce sampling aggressiveness
+    config.topK = (config.topK / 2).coerceAtLeast(10)
+    config.topP = (config.topP - 0.1f).coerceAtLeast(0.5f)
+    config.temp = (config.temp - 0.1f).coerceAtLeast(0.5f)
+
+    onLog("Reduced sampling params: temp=${config.temp}, topP=${config.topP}, topK=${config.topK}")
+
+}
+}

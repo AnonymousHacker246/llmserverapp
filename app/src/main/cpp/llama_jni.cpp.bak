@@ -6,6 +6,9 @@
 
 #include "llama/llama.h"
 
+#define LOG_TAG "LLM_DEBUG"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
 static std::mutex g_mutex;
 
 static llama_model *g_model = nullptr;
@@ -51,209 +54,309 @@ static std::string token_to_piece(const llama_vocab *vocab, llama_token token,
   return std::string(buf, n);
 }
 
+static std::string json_escape(const std::string &s) {
+  std::string out;
+  out.reserve(s.size() + 16);
+  for (char c : s) {
+    switch (c) {
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (static_cast<unsigned char>(c) < 0x20) {
+        char buf[7];
+        snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
+        out += buf;
+      } else {
+        out += c;
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------- JNI Functions ----------------
 extern "C" {
 
-// Load model
+// ---------------- Load Model ----------------
 JNIEXPORT jlong JNICALL Java_com_example_llmserverapp_LlamaBridge_loadModel(
     JNIEnv *env, jclass, jstring j_model_path) {
   ScopedLock lock(g_mutex);
+  LOGD("Loading model...");
 
-  // Unload existing
   if (g_ctx) {
     llama_free(g_ctx);
     g_ctx = nullptr;
+    LOGD("Freed old context");
   }
   if (g_model) {
     llama_model_free(g_model);
     g_model = nullptr;
+    LOGD("Freed old model");
   }
+
   g_vocab = nullptr;
   g_pos = 0;
+  g_token_bos = -1;
+  g_token_eos = -1;
 
   std::string path = jstring_to_std(env, j_model_path);
+  LOGD("Model path: %s", path.c_str());
 
-  // CPU backend default
   llama_backend_init();
 
   llama_model_params mparams = llama_model_default_params();
   mparams.vocab_only = false;
 
   g_model = llama_model_load_from_file(path.c_str(), mparams);
-  if (!g_model)
+  if (!g_model) {
+    LOGD("Failed to load model!");
     return 0;
+  }
+  LOGD("Model loaded successfully");
 
   g_cparams = llama_context_default_params();
   g_cparams.n_ctx = 2048;
   g_cparams.n_threads = 4;
+  // let n_batch / n_ubatch / n_seq_max default from model or params
 
   g_ctx = llama_init_from_model(g_model, g_cparams);
   if (!g_ctx) {
+    LOGD("Failed to initialize context!");
     llama_model_free(g_model);
     g_model = nullptr;
     return 0;
   }
+  LOGD("Context initialized");
 
   g_vocab = llama_model_get_vocab(g_model);
   g_token_bos = llama_vocab_bos(g_vocab);
   g_token_eos = llama_vocab_eos(g_vocab);
+  LOGD("Vocab loaded, BOS=%d, EOS=%d", g_token_bos, g_token_eos);
 
   return (jlong)(uintptr_t)g_ctx;
 }
 
-// Unload model
+// ---------------- Unload Model ----------------
 JNIEXPORT void JNICALL
 Java_com_example_llmserverapp_LlamaBridge_unloadModel(JNIEnv *, jclass) {
   ScopedLock lock(g_mutex);
+  LOGD("Unloading model...");
   if (g_ctx) {
     llama_free(g_ctx);
     g_ctx = nullptr;
+    LOGD("Context freed");
   }
   if (g_model) {
     llama_model_free(g_model);
     g_model = nullptr;
+    LOGD("Model freed");
   }
   g_vocab = nullptr;
   g_pos = 0;
+  g_token_bos = -1;
+  g_token_eos = -1;
   llama_backend_free();
+  LOGD("Backend freed");
 }
 
-// Reset context
+// ---------------- Reset Context ----------------
 JNIEXPORT void JNICALL
 Java_com_example_llmserverapp_LlamaBridge_resetContext(JNIEnv *, jclass) {
   ScopedLock lock(g_mutex);
-  if (!g_model)
+  LOGD("Resetting context...");
+  if (!g_model) {
+    LOGD("No model loaded, cannot reset");
     return;
+  }
   if (g_ctx) {
     llama_free(g_ctx);
     g_ctx = nullptr;
+    LOGD("Old context freed");
   }
   g_ctx = llama_init_from_model(g_model, g_cparams);
-  g_vocab = llama_model_get_vocab(g_model); // <--- crucial fix
+  if (!g_ctx) {
+    LOGD("Failed to reinitialize context");
+    return;
+  }
+  g_vocab = llama_model_get_vocab(g_model);
   g_pos = 0;
+  g_token_bos = llama_vocab_bos(g_vocab);
+  g_token_eos = llama_vocab_eos(g_vocab);
+  LOGD("New context initialized, position reset to 0");
 }
 
-// Tokenize text
+// ---------------- Tokenize ----------------
 JNIEXPORT jintArray JNICALL Java_com_example_llmserverapp_LlamaBridge_tokenize(
     JNIEnv *env, jclass, jstring j_text, jboolean add_bos) {
   ScopedLock lock(g_mutex);
-  if (!g_ctx || !g_vocab)
+  if (!g_ctx || !g_vocab) {
+    LOGD("Tokenize called but model not loaded");
     return nullptr;
+  }
 
   std::string text = jstring_to_std(env, j_text);
+  LOGD("Tokenizing text: %s", text.c_str());
+
   std::vector<llama_token> buf(text.size() + 8);
-  int32_t n = llama_tokenize(g_vocab, text.c_str(), text.size(), buf.data(),
-                             buf.size(), false, true);
+  int32_t n = llama_tokenize(g_vocab, text.c_str(), (int32_t)text.size(),
+                             buf.data(), (int32_t)buf.size(), false, true);
   if (n < 0)
     n = 0;
+  LOGD("Tokenized into %d tokens", n);
 
   std::vector<llama_token> out;
-  if (add_bos && g_token_bos != -1)
+  out.reserve(n + 1);
+  if (add_bos && g_token_bos != -1) {
     out.push_back(g_token_bos);
+  }
   out.insert(out.end(), buf.begin(), buf.begin() + n);
 
-  jintArray arr = env->NewIntArray(out.size());
+  jintArray arr = env->NewIntArray((jsize)out.size());
   if (!arr)
     return nullptr;
-  env->SetIntArrayRegion(arr, 0, out.size(),
+  env->SetIntArrayRegion(arr, 0, (jsize)out.size(),
                          reinterpret_cast<const jint *>(out.data()));
   return arr;
 }
 
+// ---------------- Generate with Stats ----------------
 JNIEXPORT jstring JNICALL
 Java_com_example_llmserverapp_LlamaBridge_generateWithStats(JNIEnv *env, jclass,
                                                             jstring j_prompt) {
   ScopedLock lock(g_mutex);
-  if (!g_ctx || !g_vocab)
+  if (!g_ctx || !g_vocab) {
+    LOGD("Generate called but model not loaded");
     return env->NewStringUTF("{\"error\":\"model not loaded\"}");
+  }
 
-  std::string prompt = apply_chat_template(jstring_to_std(env, j_prompt));
+  std::string user = jstring_to_std(env, j_prompt);
+  std::string prompt = apply_chat_template(user);
+  LOGD("Prompt after template:\n%s", prompt.c_str());
 
-  // Reset context safely
+  // Reset context for generation
   if (g_ctx) {
     llama_free(g_ctx);
     g_ctx = llama_init_from_model(g_model, g_cparams);
+    if (!g_ctx) {
+      LOGD("Failed to reinitialize context for generation");
+      return env->NewStringUTF("{\"error\":\"context init failed\"}");
+    }
     g_vocab = llama_model_get_vocab(g_model);
     g_pos = 0;
+    g_token_bos = llama_vocab_bos(g_vocab);
+    g_token_eos = llama_vocab_eos(g_vocab);
+    LOGD("Context reset for generation");
   }
 
   // Tokenize prompt
-  std::vector<llama_token> buf(prompt.size() + 8);
-  int32_t n = llama_tokenize(g_vocab, prompt.c_str(), prompt.size(), buf.data(),
-                             buf.size(), false, true);
+  std::vector<llama_token> tokens(prompt.size() + 8);
+  int32_t n =
+      llama_tokenize(g_vocab, prompt.c_str(), (int32_t)prompt.size(),
+                     tokens.data(), (int32_t)tokens.size(), false, false);
   if (n < 0)
     n = 0;
+  LOGD("Prompt tokenized into %d tokens", n);
 
-  std::vector<llama_token> tokens;
-  if (g_token_bos != -1)
-    tokens.push_back(g_token_bos);
-  tokens.insert(tokens.end(), buf.begin(), buf.begin() + n);
-
-  // Feed prompt batch
-  llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
-  // memset(&batch, 0, sizeof(batch)); // <-- important fix
-  for (size_t i = 0; i < tokens.size(); ++i) {
-    batch.token[i] = tokens[i];
-    batch.pos[i] = g_pos + i;
-    batch.n_seq_id[i] = 1;
-    for (int j = 0; j < 1; ++j)
-      batch.seq_id[i][j] = 0;
-    batch.logits[i] = 1;
+  std::vector<llama_token> input_tokens;
+  input_tokens.reserve(n + 1);
+  if (g_token_bos != -1) {
+    input_tokens.push_back(g_token_bos);
   }
+  input_tokens.insert(input_tokens.end(), tokens.begin(), tokens.begin() + n);
+
+  if (input_tokens.empty()) {
+    LOGD("No input tokens after tokenization");
+    return env->NewStringUTF("{\"error\":\"empty prompt tokens\"}");
+  }
+
+  // Decode prompt
+  llama_batch batch = llama_batch_init((int32_t)input_tokens.size(), 0, 1);
+  for (size_t i = 0; i < input_tokens.size(); ++i) {
+    batch.token[i] = input_tokens[i];
+    batch.pos[i] = g_pos + (int32_t)i;
+    batch.n_seq_id[i] = 1;
+    batch.seq_id[i][0] = 0;
+    batch.logits[i] = 1; // request logits (at least for last token)
+  }
+  batch.n_tokens = (int32_t)input_tokens.size();
 
   if (llama_decode(g_ctx, batch) != 0) {
     llama_batch_free(batch);
+    LOGD("Error: decode prompt failed");
     return env->NewStringUTF("{\"error\":\"decode prompt failed\"}");
   }
   llama_batch_free(batch);
-  g_pos += tokens.size();
+  g_pos += (int32_t)input_tokens.size();
+  LOGD("Prompt decoded successfully, position now %d", g_pos);
 
-  // Generate 16 tokens
+  // Generation loop (simple greedy argmax)
   const int n_gen = 16;
   std::string generated;
-
+  int generated_tokens = 0;
   for (int step = 0; step < n_gen; ++step) {
     const float *logits = llama_get_logits(g_ctx);
-    if (!logits)
-      break;
-    int n_vocab = llama_vocab_n_tokens(g_vocab);
-
-    std::vector<llama_token_data> candidates;
-    candidates.reserve(n_vocab);
-    for (int i = 0; i < n_vocab; ++i)
-      candidates.push_back({(llama_token)i, logits[i], 0.f});
-
-    // Greedy selection
-    llama_token tok = LLAMA_TOKEN_NULL;
-    float max_logit = -1e30f;
-    for (auto &c : candidates)
-      if (c.logit > max_logit) {
-        max_logit = c.logit;
-        tok = c.id;
-      }
-
-    if (tok == LLAMA_TOKEN_NULL)
-      break;
-
-    generated += token_to_piece(g_vocab, tok, false);
-
-    llama_batch batch = llama_batch_init(1, 0, 1);
-    // memset(&batch, 0, sizeof(batch)); // <-- fix
-    batch.token[0] = tok;
-    batch.pos[0] = g_pos;
-    batch.n_seq_id[0] = 1;
-    batch.seq_id[0][0] = 0;
-    batch.logits[0] = 1;
-
-    if (llama_decode(g_ctx, batch) != 0) {
-      llama_batch_free(batch);
+    if (!logits) {
+      LOGD("Logits null, stopping generation");
       break;
     }
-    llama_batch_free(batch);
+
+    int n_vocab = llama_vocab_n_tokens(g_vocab);
+    llama_token tok = LLAMA_TOKEN_NULL;
+    float max_logit = -1e30f;
+
+    for (int i = 0; i < n_vocab; ++i) {
+      if (logits[i] > max_logit) {
+        max_logit = logits[i];
+        tok = (llama_token)i;
+      }
+    }
+
+    if (tok == LLAMA_TOKEN_NULL || tok == g_token_eos) {
+      LOGD("EOS or NULL token reached, stopping at step %d", step);
+      break;
+    }
+
+    std::string piece = token_to_piece(g_vocab, tok, false);
+    LOGD("Step %d, token %d -> piece '%s'", step, tok, piece.c_str());
+    generated += piece;
+
+    llama_batch b = llama_batch_init(1, 0, 1);
+    b.token[0] = tok;
+    b.pos[0] = g_pos;
+    b.n_seq_id[0] = 1;
+    b.seq_id[0][0] = 0;
+    b.logits[0] = 1; // request logits for next step
+    b.n_tokens = 1;
+
+    if (llama_decode(g_ctx, b) != 0) {
+      llama_batch_free(b);
+      LOGD("Error: decode generated token failed at step %d", step);
+      break;
+    }
+
+    llama_batch_free(b);
+    generated_tokens++;
     g_pos++;
   }
 
-  std::string json = "{\"text\":\"" + generated + "\"}";
+  LOGD("Generation complete, total generated chars: %zu", generated.size());
+  std::string escaped = json_escape(generated);
+  std::string json = "{\"text\":\"" + escaped +
+                     "\", \"generated\":" + std::to_string(generated_tokens) +
+                     "}";
   return env->NewStringUTF(json.c_str());
 }
 
