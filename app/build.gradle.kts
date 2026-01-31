@@ -1,11 +1,11 @@
 plugins {
-    id("com.android.application") version "8.4.0"
-    id("org.jetbrains.kotlin.android") version "1.9.10"
+    id("com.android.application") version "9.0.0"
+    alias(libs.plugins.compose.compiler)
 }
 
 android {
     namespace = "com.example.llmserverapp"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.llmserverapp"
@@ -14,7 +14,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Only include the ABIs we need
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -29,10 +28,10 @@ android {
     }
 
     buildTypes {
-        getByName("debug") {
+        debug {
             isDebuggable = true
         }
-        getByName("release") {
+        release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -46,18 +45,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
-    // Prebuilt JNI libs
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
         }
     }
 
-    // Configure packaging for C++ shared library
     packaging {
         jniLibs {
             useLegacyPackaging = false
@@ -68,31 +61,27 @@ android {
         }
     }
 
-    // Configure CMake build
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.31.6" // match your Android Studio version
+            version = "3.31.6"
         }
     }
+    buildToolsVersion = "36.1.0"
+    ndkVersion = "29.0.14206865"
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.10")
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-
-    // Jetpack Compose
-    implementation("androidx.activity:activity-compose:1.8.2")
-    implementation("androidx.compose.ui:ui:1.5.3")
-    implementation("androidx.compose.material3:material3:1.2.1")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.5.3")
-    debugImplementation("androidx.compose.ui:ui-tooling:1.5.3")
-
-    // Networking and HTTP server
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
-    implementation("com.squareup.okhttp3:okhttp:4.11.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.11.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    debugImplementation(libs.compose.ui.tooling)
+    implementation(libs.material.icons.extended)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.nanohttpd)
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.logging)
+    implementation(libs.lifecycle.runtime.ktx)
 }
-
