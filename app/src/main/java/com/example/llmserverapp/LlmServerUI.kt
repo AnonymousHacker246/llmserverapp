@@ -1,20 +1,51 @@
 package com.example.llmserverapp
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.llmserverapp.ModelManager.listAvailableModels
+import com.example.llmserverapp.core.logging.LogBuffer
+import com.example.llmserverapp.core.logging.LogEntry
+import com.example.llmserverapp.core.models.ModelDescriptor
+import com.example.llmserverapp.core.models.ModelManager
 import com.example.llmserverapp.ui.theme.Dimens
 import java.io.File
 
@@ -24,16 +55,13 @@ fun LlmServerUI() {
     val context = LocalContext.current
 
     val isRunning by ServerController.isRunning.collectAsState()
-    val logs by ServerController.logs.collectAsState()
+    val logs by LogBuffer.logs.collectAsState()
 
-    val models = remember { mutableStateListOf<File>() }
-    var selectedModel by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        models.clear()
-        models.addAll(listAvailableModels(context))
-    }
+    val models by ModelManager.models.collectAsState()
+    var selectedModel by remember { mutableStateOf<String?>(null) }
+
 
     Scaffold(
         topBar = {
@@ -99,7 +127,7 @@ fun LlmServerUI() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModelSelectionCard(
-    models: List<File>,
+    models: List<ModelDescriptor>,
     selectedModel: String?,
     expanded: Boolean,
     onExpand: (Boolean) -> Unit,
@@ -153,7 +181,7 @@ private fun ModelSelectionCard(
                             DropdownMenuItem(
                                 text = { Text(file.name) },
                                 onClick = {
-                                    onSelect(file.absolutePath)
+                                    onSelect(file.localPath)
                                     onExpand(false)
                                 }
                             )
@@ -167,14 +195,14 @@ private fun ModelSelectionCard(
                     onClick = {
                         selectedModel?.let { path ->
                             val fileName = File(path).name
-                            ServerController.appendLog("Loading model: $fileName")
+                            LogBuffer.info("Loading model: $fileName")
                             LlamaBridge.unloadModel()
                             val result = LlamaBridge.loadModel(path)
                             if (result != 0L) {
-                                ServerController.appendLog("Model Loaded ✓")
+                                LogBuffer.info("Model Loaded ✓")
                                 ServerController.modelPath = path
                             } else {
-                                ServerController.appendLog("Model Failed to load (code: $result)")
+                                LogBuffer.info("Model Failed to load (code: $result)")
                             }
                         }
                     },
@@ -186,7 +214,7 @@ private fun ModelSelectionCard(
 
                 Button(
                     onClick = {
-                        ServerController.appendLog("Running benchmark…")
+                        LogBuffer.info("Running benchmark…")
                         ServerController.runBenchmark()
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -254,7 +282,7 @@ private fun ServerControlsCard(isRunning: Boolean) {
 }
 
 @Composable
-private fun LogsCard(logs: List<String>) {
+private fun LogsCard(logs: List<LogEntry>) {
     val listState = rememberLazyListState()
 
     LaunchedEffect(logs.size) {
@@ -276,7 +304,7 @@ private fun LogsCard(logs: List<String>) {
         ) {
             items(logs) { log ->
                 Text(
-                    text = log,
+                    text = log.message,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(vertical = 2.dp)

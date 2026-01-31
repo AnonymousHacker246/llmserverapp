@@ -3,23 +3,20 @@ package com.example.llmserverapp.core.logging
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 object LogBuffer {
 
-    private const val MAX_LINES = 5000
+    private const val MAX_LOGS = 500
 
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs.asStateFlow()
 
     @Synchronized
-    fun append(entry: LogEntry) {
-        val current = _logs.value
-        val next = if (current.size >= MAX_LINES) {
-            current.drop(current.size - MAX_LINES + 1) + entry
-        } else {
-            current + entry
+    fun append(entry: LogEntry){
+        _logs.update { list ->
+            (list + entry).takeLast(MAX_LOGS)
         }
-        _logs.value = next
     }
 
     fun info(msg: String, tag: String? = null) =

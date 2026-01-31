@@ -1,13 +1,12 @@
 package com.example.llmserverapp
 
 import android.content.Context
+import com.example.llmserverapp.NetworkUtils.getLocalIpAddress
+import com.example.llmserverapp.core.logging.LogBuffer
 import fi.iki.elonen.NanoHTTPD
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.io.File
-import com.example.llmserverapp.ModelManager.prettySize
-import com.example.llmserverapp.NetworkUtils.getLocalIpAddress
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private var httpServer: LocalHttpServer? = null
@@ -23,9 +22,6 @@ object ServerController {
     var modelPath: String? = null
     val isRunning: StateFlow<Boolean> = _isRunning
 
-    private val _logs = MutableStateFlow<List<String>>(emptyList())
-    val logs: StateFlow<List<String>> = _logs
-
     fun init(context: Context) {
         appContext = context.applicationContext
         modelPath = null
@@ -34,46 +30,46 @@ object ServerController {
     fun startServer() {
         val path = modelPath
         if (path == null) {
-            appendLog("No model loaded. Please load a model first.")
+            LogBuffer.info("No model loaded. Please load a model first.")
             return
         } else {
 
             port = 18080
             val ip = getLocalIpAddress()
 
-            appendLog("Starting server...")
+            LogBuffer.info("Starting server...")
 
             if (httpServer == null) {
                 httpServer = LocalHttpServer(port)
                 try {
                     httpServer?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-                    appendLog("HTTP server started on " + ip + ":" + port)
+                    LogBuffer.info("HTTP server started on " + ip + ":" + port)
                     _isRunning.value = true
                 } catch (t: Throwable) {
-                    appendLog("Error starting server: ${t.message}")
+                    LogBuffer.info("Error starting server: ${t.message}")
                     return
                 }
             } else {
-                appendLog("HTTP server already running")
+                LogBuffer.info("HTTP server already running")
             }
         }
     }
 
     fun stopServer() {
-        appendLog("Stopping server...")
+        LogBuffer.info("Stopping server...")
         _isRunning.value = false
 
         // Stop HTTP server
         httpServer?.stop()
         httpServer = null
-        appendLog("HTTP Server Stopped")
+        LogBuffer.info("HTTP Server Stopped")
 
         // Unload model AFTER server stops
         try {
             LlamaBridge.unloadModel()
-            appendLog("Model unloaded ✓")
+            LogBuffer.info("Model unloaded ✓")
         } catch (e: Exception) {
-            appendLog("Failed to unload model: ${e.message}")
+            LogBuffer.info("Failed to unload model: ${e.message}")
         }
 
         // Reset modelPath so Start requires a reload
@@ -81,22 +77,17 @@ object ServerController {
     }
 
     fun runBenchmark() {
-        appendLog("Starting model benchmark…")
+        LogBuffer.info("Starting model benchmark…")
 
         // Run on background thread
         scope.launch(Dispatchers.Default) {
             try {
                 LlamaBridge.benchmarkModel { msg ->
-                    appendLog(msg)
+                    LogBuffer.info(msg)
                 }
             } catch (e: Exception) {
-                appendLog("Benchmark failed: ${e.message}")
+                LogBuffer.info("Benchmark failed: ${e.message}")
             }
         }
-    }
-
-
-    fun appendLog(message: String) {
-        _logs.value = _logs.value + message
     }
 }
