@@ -1,9 +1,12 @@
 package com.example.llmserverapp.core.models
 
+import android.content.Intent
 import com.example.llmserverapp.AppScope
 import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.core.logging.LogBuffer
+import com.example.llmserverapp.core.services.DownloadService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -114,7 +117,12 @@ object ModelManager {
     fun downloadModel(id: String) {
         scope.launch {
 
-            // Set to Downloading
+            // 1. Start foreground service immediately
+
+            val ctx = ServerController.appContext
+            ctx.startForegroundService(Intent(ctx, DownloadService::class.java))
+
+            // 2. Update UI state to "Downloading"
             _models.update { list ->
                 list.map {
                     if (it.id == id) it.copy(status = ModelStatus.Downloading, progress = 0f)
@@ -126,14 +134,13 @@ object ModelManager {
             val url = model.downloadUrl
 
             try {
+                // 3. Prepare files + metadata
                 val meta = fetchModelMetadata(url)
-                val finalFile = File(ServerController.appContext.filesDir, model.fileName)
-                val tempFile = File(ServerController.appContext.filesDir, model.fileName + ".tmp")
+                val finalFile = File(ctx.filesDir, model.fileName)
+                val tempFile = File(ctx.filesDir, model.fileName + ".tmp")
 
-                // How many bytes already downloaded?
                 val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
 
-                // Build connection with Range header if resuming
                 val connection = URL(url).openConnection().apply {
                     if (existingBytes > 0) {
                         setRequestProperty("Range", "bytes=$existingBytes-")
@@ -142,59 +149,50 @@ object ModelManager {
 
                 val totalBytes = meta.sizeBytes
                 val input = connection.getInputStream()
-
-                // Append mode if resuming
                 val output = FileOutputStream(tempFile, existingBytes > 0)
 
                 val buffer = ByteArray(8 * 1024)
                 var downloaded = existingBytes
                 var read: Int
 
+// ⭐ Smooth progress updater — runs every 100ms regardless of network speed
+                val progressJob = scope.launch {
+                    var lastNotify = 0L
+                    while (true) {
+                        val now = System.currentTimeMillis()
+                        val progress = downloaded.toFloat() / totalBytes.toFloat()
+
+                        // UI updates every 100ms
+                        _models.update { list ->
+                            list.map {
+                                if (it.id == id) it.copy(progress = progress)
+                                else it
+                            }
+                        }
+
+                        // Notification updates every 1 second
+                        if (now - lastNotify >= 1000) {
+                            DownloadService.instance?.updateProgress(progress)
+                            lastNotify = now
+                        }
+
+                        delay(100)
+                    }
+                }
+
+
+// ⭐ Pure I/O loop — no UI work here
                 while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)
                     downloaded += read
-
-                    val progress = downloaded.toFloat() / totalBytes.toFloat()
-
-                    _models.update { list ->
-                        list.map {
-                            if (it.id == id) it.copy(progress = progress)
-                            else it
-                        }
-                    }
                 }
+
+                progressJob.cancel()
 
                 output.flush()
                 output.close()
                 input.close()
 
-                // Integrity check
-                if (tempFile.length() != totalBytes) {
-                    LogBuffer.error(
-                        "Download incomplete: local=${tempFile.length()} expected=$totalBytes",
-                        tag = "MODEL"
-                    )
-
-                    _models.update { list ->
-                        list.map {
-                            if (it.id == id) it.copy(status = ModelStatus.Failed, progress = null)
-                            else it
-                        }
-                    }
-
-                    return@launch
-                }
-
-                // Atomic rename
-                tempFile.renameTo(finalFile)
-
-                _models.update { list ->
-                    list.map {
-                        if (it.id == id)
-                            it.copy(status = ModelStatus.Downloaded, progress = null)
-                        else it
-                    }
-                }
 
             } catch (e: Exception) {
                 LogBuffer.error("Download failed: ${e.message}", tag = "MODEL")
@@ -205,14 +203,17 @@ object ModelManager {
                         else it
                     }
                 }
+            } finally {
+                // 8. Always stop foreground service
+                DownloadService.instance?.stopServiceSafely()
             }
         }
     }
 
 
     // ------------------------------------------------------------
-    // Load Model
-    // ------------------------------------------------------------
+// Load Model
+// ------------------------------------------------------------
     fun loadModel(id: String) {
         val model = _models.value.firstOrNull { it.id == id } ?: return
         val file = File(model.localPath)
@@ -243,8 +244,8 @@ object ModelManager {
     }
 
     // ------------------------------------------------------------
-    // Benchmark (kept as-is, but using AppScope.default if desired)
-    // ------------------------------------------------------------
+// Benchmark (kept as-is, but using AppScope.default if desired)
+// ------------------------------------------------------------
     fun runBenchmark() {
         val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded }
         if (loaded == null) {
@@ -266,8 +267,8 @@ object ModelManager {
     }
 
     // ------------------------------------------------------------
-    // Unload Model
-    // ------------------------------------------------------------
+// Unload Model
+// ------------------------------------------------------------
     fun unloadModel() {
         LogBuffer.info("Unloading model…", tag = "MODEL")
 
