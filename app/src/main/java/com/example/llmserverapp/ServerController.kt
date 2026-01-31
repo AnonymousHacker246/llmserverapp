@@ -5,19 +5,16 @@ import com.example.llmserverapp.NetworkUtils.getLocalIpAddress
 import com.example.llmserverapp.core.logging.LogBuffer
 import com.example.llmserverapp.core.models.ModelManager
 import fi.iki.elonen.NanoHTTPD
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 
 private var httpServer: LocalHttpServer? = null
 private var port = 0
 
 object ServerController {
 
-    private val scope = kotlinx.coroutines.CoroutineScope(
-        Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
-    )
+    // Use AppScope.default instead of a private scope
+    private val scope = AppScope.default
 
     lateinit var appContext: Context
     private val _isRunning = MutableStateFlow(false)
@@ -76,19 +73,5 @@ object ServerController {
 
         // Reset modelPath so Start requires a reload
         modelPath = null
-    }
-
-    fun runBenchmark() {
-        LogBuffer.info("Starting model benchmark…", tag = "BENCHMARK")
-
-        scope.launch(Dispatchers.Default) {
-            try {
-                LlamaBridge.benchmarkModel { msg ->
-                    LogBuffer.info(msg, tag = "BENCHMARK")
-                }
-            } catch (e: Exception) {
-                LogBuffer.error("Benchmark failed: ${e.message}", tag = "BENCHMARK")
-            }
-        }
     }
 }

@@ -18,17 +18,26 @@ suspend fun fetchModelMetadata(urlString: String): RemoteModelMetadata {
     val size = conn.contentLengthLong
 
     val disposition = conn.getHeaderField("Content-Disposition")
-    val fileName = when {
-        disposition != null && disposition.contains("filename=") ->
-            disposition.substringAfter("filename=").trim('"')
-        else ->
-            url.path.substringAfterLast("/")
-    }
+    val rawName = disposition
+        ?.substringAfter("filename=", missingDelimiterValue = "")
+        ?.trim()
+        ?.ifEmpty { null }
+        ?: url.path.substringAfterLast('/')
+
+    val cleanName = rawName
+        .trim()
+        .removePrefix("\"")
+        .removeSuffix("\"")
+        .removeSuffix(";")
+        .removeSuffix("\";")
+        .replace("\"", "")
+        .replace(";", "")
+
 
     conn.disconnect()
 
     return RemoteModelMetadata(
-        fileName = fileName,
+        fileName = cleanName,
         sizeBytes = size
     )
 }

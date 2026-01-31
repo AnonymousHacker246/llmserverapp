@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,16 +32,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.llmserverapp.core.models.ModelDescriptor
 import com.example.llmserverapp.core.models.ModelManager
+import com.example.llmserverapp.core.models.ModelManager.prettySize
 import com.example.llmserverapp.core.models.ModelStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelsScreen() {
+
     val models by ModelManager.models.collectAsState()
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -53,6 +57,8 @@ fun ModelsScreen() {
             TopAppBar(
                 title = { Text("Models") },
                 actions = {
+
+                    // ⋮ Overflow menu
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "Menu")
                     }
@@ -97,9 +103,20 @@ fun ModelRow(model: ModelDescriptor) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(Modifier.weight(1f)) {
-                Text(model.prettyName, style = MaterialTheme.typography.titleMedium)
-                Text(model.fileName, style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        model.prettyName,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        "  •  ${prettySize(model.sizeBytes)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                }
             }
+
 
             when (model.status) {
                 ModelStatus.NotDownloaded ->
@@ -124,10 +141,18 @@ fun ModelRow(model: ModelDescriptor) {
                     val pct = ((model.progress ?: 0f) * 100).toInt()
                     Text("$pct%")
                 }
+
+                ModelStatus.Failed -> {
+                    IconButton(onClick = { ModelManager.refreshModels(force = true) }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Retry download"
+                        )
+                    }
+                }
             }
         }
 
-        // --- Progress bar under the row, above the divider ---
         if (model.status == ModelStatus.Downloading) {
             LinearProgressIndicator(
                 progress = { model.progress ?: 0f },

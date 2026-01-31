@@ -1,23 +1,23 @@
 package com.example.llmserverapp.core.models
 
+import com.example.llmserverapp.AppScope
 import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.core.logging.LogBuffer
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URL
 
 enum class ModelStatus {
     NotDownloaded,
     Downloading,
     Downloaded,
-    Loaded
+    Loaded,
+    Failed
 }
 
 data class ModelDescriptor(
@@ -27,12 +27,21 @@ data class ModelDescriptor(
     val downloadUrl: String,
     val localPath: String,
     val status: ModelStatus,
-    val progress: Float? = null
+    val progress: Float? = null,
+    val sizeBytes: Long
 )
 
 object ModelManager {
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // Global, app-lifecycle scope
+    private val scope = AppScope.io
+    private fun prettyBaseName(fileName: String): String {
+        return fileName
+            .removeSuffix(".gguf")
+            .substringBefore('-')
+            .lowercase()
+    }
+
 
     private val _models = MutableStateFlow<List<ModelDescriptor>>(emptyList())
     val models: StateFlow<List<ModelDescriptor>> = _models
@@ -42,7 +51,24 @@ object ModelManager {
     // ------------------------------------------------------------
     // Refresh model list
     // ------------------------------------------------------------
-    fun refreshModels() {
+    private var didInitialRefresh = false
+
+    fun prettySize(bytes: Long): String {
+        val kb = 1024L
+        val mb = kb * 1024
+        val gb = mb * 1024
+
+        return when {
+            bytes >= gb -> String.format("%.1f GB", bytes.toDouble() / gb)
+            bytes >= mb -> String.format("%.1f MB", bytes.toDouble() / mb)
+            bytes >= kb -> String.format("%.1f KB", bytes.toDouble() / kb)
+            else -> "$bytes B"
+        }
+    }
+
+    fun refreshModels(force: Boolean = false) {
+        if (!force && didInitialRefresh) return
+        didInitialRefresh = true
         scope.launch {
             val urls = listOf(
                 "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
@@ -53,25 +79,37 @@ object ModelManager {
                 val meta = fetchModelMetadata(url)
                 val file = File(ServerController.appContext.filesDir, meta.fileName)
 
-                ModelDescriptor(
-                    id = meta.fileName,
-                    prettyName = meta.fileName.removeSuffix(".gguf"),
-                    fileName = meta.fileName,
-                    downloadUrl = url,
-                    localPath = file.absolutePath,
-                    status = if (file.exists() && file.length() > 0)
+                val baseStatus =
+                    if (file.exists() && file.length() == meta.sizeBytes)
                         ModelStatus.Downloaded
                     else
                         ModelStatus.NotDownloaded
+
+                ModelDescriptor(
+                    id = meta.fileName,
+                    prettyName = prettyBaseName(meta.fileName),
+                    fileName = meta.fileName,
+                    downloadUrl = url,
+                    localPath = file.absolutePath,
+                    status = baseStatus,
+                    sizeBytes = meta.sizeBytes
                 )
             }
 
-            _models.value = descriptors
+            // Preserve loaded state based on loadedModelId
+            val merged = descriptors.map { desc ->
+                if (desc.id == loadedModelId)
+                    desc.copy(status = ModelStatus.Loaded)
+                else
+                    desc
+            }
+
+            _models.value = merged
         }
     }
 
     // ------------------------------------------------------------
-    // Download model (with progress)
+    // Download model (with progress + integrity check)
     // ------------------------------------------------------------
     fun downloadModel(id: String) {
         scope.launch {
@@ -88,22 +126,35 @@ object ModelManager {
             val url = model.downloadUrl
 
             try {
-                val connection = URL(url).openConnection()
-                val total = connection.contentLengthLong
+                val meta = fetchModelMetadata(url)
+                val finalFile = File(ServerController.appContext.filesDir, model.fileName)
+                val tempFile = File(ServerController.appContext.filesDir, model.fileName + ".tmp")
+
+                // How many bytes already downloaded?
+                val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+
+                // Build connection with Range header if resuming
+                val connection = URL(url).openConnection().apply {
+                    if (existingBytes > 0) {
+                        setRequestProperty("Range", "bytes=$existingBytes-")
+                    }
+                }
+
+                val totalBytes = meta.sizeBytes
                 val input = connection.getInputStream()
 
-                val file = File(ServerController.appContext.filesDir, model.fileName)
-                val output = file.outputStream()
+                // Append mode if resuming
+                val output = FileOutputStream(tempFile, existingBytes > 0)
 
                 val buffer = ByteArray(8 * 1024)
-                var downloaded = 0L
+                var downloaded = existingBytes
                 var read: Int
 
                 while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)
                     downloaded += read
 
-                    val progress = downloaded.toFloat() / total.toFloat()
+                    val progress = downloaded.toFloat() / totalBytes.toFloat()
 
                     _models.update { list ->
                         list.map {
@@ -117,7 +168,26 @@ object ModelManager {
                 output.close()
                 input.close()
 
-                // Success
+                // Integrity check
+                if (tempFile.length() != totalBytes) {
+                    LogBuffer.error(
+                        "Download incomplete: local=${tempFile.length()} expected=$totalBytes",
+                        tag = "MODEL"
+                    )
+
+                    _models.update { list ->
+                        list.map {
+                            if (it.id == id) it.copy(status = ModelStatus.Failed, progress = null)
+                            else it
+                        }
+                    }
+
+                    return@launch
+                }
+
+                // Atomic rename
+                tempFile.renameTo(finalFile)
+
                 _models.update { list ->
                     list.map {
                         if (it.id == id)
@@ -129,15 +199,9 @@ object ModelManager {
             } catch (e: Exception) {
                 LogBuffer.error("Download failed: ${e.message}", tag = "MODEL")
 
-                // Remove partial file
-                val file = File(ServerController.appContext.filesDir, model.fileName)
-                if (file.exists()) file.delete()
-
-                // Reset status
                 _models.update { list ->
                     list.map {
-                        if (it.id == id)
-                            it.copy(status = ModelStatus.NotDownloaded, progress = null)
+                        if (it.id == id) it.copy(status = ModelStatus.Failed, progress = null)
                         else it
                     }
                 }
@@ -145,13 +209,15 @@ object ModelManager {
         }
     }
 
+
     // ------------------------------------------------------------
     // Load Model
     // ------------------------------------------------------------
     fun loadModel(id: String) {
         val model = _models.value.firstOrNull { it.id == id } ?: return
+        val file = File(model.localPath)
 
-        if (!File(model.localPath).exists()) {
+        if (!file.exists()) {
             LogBuffer.error("Model file missing: ${model.localPath}", tag = "MODEL")
             return
         }
@@ -177,24 +243,24 @@ object ModelManager {
     }
 
     // ------------------------------------------------------------
-    // Benchmark
+    // Benchmark (kept as-is, but using AppScope.default if desired)
     // ------------------------------------------------------------
     fun runBenchmark() {
         val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded }
         if (loaded == null) {
-            LogBuffer.info("Benchmark requires a loaded model", tag = "BENCHMARK")
+            LogBuffer.info("Benchmark requires a loaded model")
             return
         }
 
-        LogBuffer.info("Starting benchmark for ${loaded.prettyName}", tag = "BENCHMARK")
+        // LogBuffer.info("Starting benchmark for ${loaded.prettyName}")
 
-        scope.launch(Dispatchers.Default) {
+        AppScope.default.launch {
             try {
-                LlamaBridge.benchmarkModel { msg ->
-                    LogBuffer.info(msg, tag = "BENCHMARK")
+                LlamaBridge.benchmarkModel(loaded.prettyName) { msg ->
+                    LogBuffer.info(msg)
                 }
             } catch (e: Exception) {
-                LogBuffer.error("Benchmark failed: ${e.message}", tag = "BENCHMARK")
+                LogBuffer.error("Benchmark failed: ${e.message}")
             }
         }
     }
