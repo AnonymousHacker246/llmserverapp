@@ -153,6 +153,19 @@ object ModelManager {
         }
     }
 
+    fun unloadModel() {
+        loadedModelId = null
+
+        _models.update { list ->
+            list.map {
+                if (it.status == ModelStatus.Loaded)
+                    it.copy(status = ModelStatus.Downloaded)
+                else it
+            }
+        }
+    }
+
+
     fun download(id: String) {
         scope.launch {
             downloadModel(id)

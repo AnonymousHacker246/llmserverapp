@@ -30,7 +30,7 @@ fun AppNavHost(
             ModelsScreen()
         }
         composable(NavRoute.Server.route) {
-            ServerScreen(navController)
+            ServerScreen()
         }
         composable(NavRoute.Logs.route) {
             LogsScreen()
