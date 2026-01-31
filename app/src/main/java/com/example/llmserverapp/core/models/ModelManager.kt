@@ -1,160 +1,218 @@
 package com.example.llmserverapp.core.models
 
-import android.content.Context
+import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.core.logging.LogBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
 
+enum class ModelStatus {
+    NotDownloaded,
+    Downloading,
+    Downloaded,
+    Loaded
+}
+
+data class ModelDescriptor(
+    val id: String,
+    val prettyName: String,
+    val fileName: String,
+    val downloadUrl: String,
+    val localPath: String,
+    val status: ModelStatus,
+    val progress: Float? = null
+)
+
 object ModelManager {
-    private val scope = CoroutineScope(Dispatchers.IO)
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     private val _models = MutableStateFlow<List<ModelDescriptor>>(emptyList())
-    private var loadedModelId: String? = null
     val models: StateFlow<List<ModelDescriptor>> = _models
 
-    suspend fun init(context: Context) = withContext(Dispatchers.IO) {
-        val base = context.filesDir.absolutePath
-        val urls = listOf(
-            "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-        )
+    private var loadedModelId: String? = null
 
-        val descriptors = urls.map { url ->
-            val meta = fetchModelMetadata(url)
-            val localPath = "$base/${meta.fileName}"
-            val exists = File(localPath).exists()
-
-            ModelDescriptor(
-                id = meta.fileName,
-                name = meta.fileName,
-                prettyName = meta.fileName.removeSuffix(".gguf"),
-                sizeBytes = meta.sizeBytes,
-                url = url,
-                localPath = localPath,
-                downloaded = exists,
-                status = when {
-                    loadedModelId == meta.fileName -> ModelStatus.Loaded
-                    exists -> ModelStatus.Downloaded
-                    else -> ModelStatus.NotDownloaded
-                },
-                progress = if (exists) 100 else 0
+    // ------------------------------------------------------------
+    // Refresh model list
+    // ------------------------------------------------------------
+    fun refreshModels() {
+        scope.launch {
+            val urls = listOf(
+                "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+                "https://huggingface.co/TheBloke/CodeLlama-7B-GGUF/resolve/main/codellama-7b.Q5_K_S.gguf"
             )
-        }
 
-        // Merge with existing list to preserve runtime state
-        _models.update { old ->
-            descriptors.map { new ->
-                val prev = old.firstOrNull { it.id == new.id }
-                if (prev != null) {
-                    new.copy(
-                        status = prev.status,
-                        progress = prev.progress,
-                        downloaded = prev.downloaded
-                    )
-                } else new
+            val descriptors = urls.map { url ->
+                val meta = fetchModelMetadata(url)
+                val file = File(ServerController.appContext.filesDir, meta.fileName)
+
+                ModelDescriptor(
+                    id = meta.fileName,
+                    prettyName = meta.fileName.removeSuffix(".gguf"),
+                    fileName = meta.fileName,
+                    downloadUrl = url,
+                    localPath = file.absolutePath,
+                    status = if (file.exists() && file.length() > 0)
+                        ModelStatus.Downloaded
+                    else
+                        ModelStatus.NotDownloaded
+                )
             }
+
+            _models.value = descriptors
         }
     }
 
-    suspend fun downloadModel(id: String) {
-        val model = _models.value.first { it.id == id }
+    // ------------------------------------------------------------
+    // Download model (with progress)
+    // ------------------------------------------------------------
+    fun downloadModel(id: String) {
+        scope.launch {
 
-        _models.update { list ->
-            list.map {
-                if (it.id == id) it.copy(status = ModelStatus.Downloading, progress = 0)
-                else it
+            // Set to Downloading
+            _models.update { list ->
+                list.map {
+                    if (it.id == id) it.copy(status = ModelStatus.Downloading, progress = 0f)
+                    else it
+                }
             }
-        }
 
-        try {
-            withContext(Dispatchers.IO) {
-                val url = URL(model.url)
-                val conn = url.openConnection()
-                val total = conn.contentLengthLong
-                val input = conn.getInputStream()
-                val output = File(model.localPath).outputStream()
+            val model = _models.value.first { it.id == id }
+            val url = model.downloadUrl
 
+            try {
+                val connection = URL(url).openConnection()
+                val total = connection.contentLengthLong
+                val input = connection.getInputStream()
+
+                val file = File(ServerController.appContext.filesDir, model.fileName)
+                val output = file.outputStream()
+
+                val buffer = ByteArray(8 * 1024)
                 var downloaded = 0L
-                val buffer = ByteArray(8192)
+                var read: Int
 
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read <= 0) break
+                while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)
                     downloaded += read
 
-                    val percent = ((downloaded * 100) / total).toInt()
+                    val progress = downloaded.toFloat() / total.toFloat()
 
                     _models.update { list ->
                         list.map {
-                            if (it.id == id) it.copy(progress = percent)
+                            if (it.id == id) it.copy(progress = progress)
                             else it
                         }
                     }
                 }
 
+                output.flush()
                 output.close()
                 input.close()
-            }
 
-            _models.update { list ->
-                list.map {
-                    if (it.id == id)
-                        it.copy(
-                            status = ModelStatus.Downloaded,
-                            downloaded = true,
-                            progress = 100
-                        )
-                    else it
+                // Success
+                _models.update { list ->
+                    list.map {
+                        if (it.id == id)
+                            it.copy(status = ModelStatus.Downloaded, progress = null)
+                        else it
+                    }
+                }
+
+            } catch (e: Exception) {
+                LogBuffer.error("Download failed: ${e.message}", tag = "MODEL")
+
+                // Remove partial file
+                val file = File(ServerController.appContext.filesDir, model.fileName)
+                if (file.exists()) file.delete()
+
+                // Reset status
+                _models.update { list ->
+                    list.map {
+                        if (it.id == id)
+                            it.copy(status = ModelStatus.NotDownloaded, progress = null)
+                        else it
+                    }
                 }
             }
-
-            LogBuffer.info("Model ${model.prettyName} downloaded", tag = "MODEL")
-
-        } catch (e: Exception) {
-            _models.update { list ->
-                list.map {
-                    if (it.id == id) it.copy(status = ModelStatus.Error)
-                    else it
-                }
-            }
-            LogBuffer.error(
-                "Failed to download ${model.prettyName}: ${e.message}",
-                tag = "MODEL"
-            )
         }
     }
 
+    // ------------------------------------------------------------
+    // Load Model
+    // ------------------------------------------------------------
     fun loadModel(id: String) {
-        val model = _models.value.first { it.id == id }
+        val model = _models.value.firstOrNull { it.id == id } ?: return
+
+        if (!File(model.localPath).exists()) {
+            LogBuffer.error("Model file missing: ${model.localPath}", tag = "MODEL")
+            return
+        }
+
+        val result = LlamaBridge.loadModel(model.localPath)
+        if (result == 0L) {
+            LogBuffer.error("Native loadModel returned 0", tag = "MODEL")
+            return
+        }
 
         loadedModelId = id
+        ServerController.modelPath = model.localPath
 
         _models.update { list ->
             list.map {
-                when (it.id) {
-                    id -> it.copy(status = ModelStatus.Loaded)
-                    else -> it.copy(status = ModelStatus.Downloaded)
+                when {
+                    it.id == id -> it.copy(status = ModelStatus.Loaded)
+                    it.status == ModelStatus.Loaded -> it.copy(status = ModelStatus.Downloaded)
+                    else -> it
                 }
             }
         }
+    }
 
-        try {
-            ServerController.modelPath = model.localPath
-            LogBuffer.info("Loaded model ${model.prettyName}", tag = "MODEL")
-        } catch (e: Exception) {
-            LogBuffer.error("Failed to load model: ${e.message}", tag = "MODEL")
+    // ------------------------------------------------------------
+    // Benchmark
+    // ------------------------------------------------------------
+    fun runBenchmark() {
+        val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded }
+        if (loaded == null) {
+            LogBuffer.info("Benchmark requires a loaded model", tag = "BENCHMARK")
+            return
+        }
+
+        LogBuffer.info("Starting benchmark for ${loaded.prettyName}", tag = "BENCHMARK")
+
+        scope.launch(Dispatchers.Default) {
+            try {
+                LlamaBridge.benchmarkModel { msg ->
+                    LogBuffer.info(msg, tag = "BENCHMARK")
+                }
+            } catch (e: Exception) {
+                LogBuffer.error("Benchmark failed: ${e.message}", tag = "BENCHMARK")
+            }
         }
     }
 
+    // ------------------------------------------------------------
+    // Unload Model
+    // ------------------------------------------------------------
     fun unloadModel() {
+        LogBuffer.info("Unloading model…", tag = "MODEL")
+
+        try {
+            LlamaBridge.unloadModel()
+        } catch (e: Exception) {
+            LogBuffer.error("Native unloadModel failed: ${e.message}", tag = "MODEL")
+        }
+
         loadedModelId = null
+        ServerController.modelPath = null
 
         _models.update { list ->
             list.map {
@@ -163,16 +221,7 @@ object ModelManager {
                 else it
             }
         }
-    }
 
-
-    fun download(id: String) {
-        scope.launch {
-            downloadModel(id)
-        }
-    }
-
-    fun load(id: String) {
-        loadModel(id)
+        LogBuffer.info("Model unloaded ✓", tag = "MODEL")
     }
 }

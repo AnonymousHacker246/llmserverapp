@@ -20,10 +20,10 @@ class MainActivity : ComponentActivity() {
         // --- Modern fullscreen API (correct placement) ---
         window.decorView.post {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.setDecorFitsSystemWindows(false)
+                // window.setDecorFitsSystemWindows(false)
 
                 window.insetsController?.apply {
-                    hide(android.view.WindowInsets.Type.systemBars())
+                    // hide(android.view.WindowInsets.Type.systemBars())
                     systemBarsBehavior =
                         android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 }
