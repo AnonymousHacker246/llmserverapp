@@ -50,7 +50,7 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
 
             "/diagnose" -> {
-                val start = System.currentTimeMillis()
+                System.currentTimeMillis()
                 LogBuffer.info("HTTP ${session.method} /generate", tag = "HTTP")
 
                 session.queryParameterString?.let {
@@ -95,7 +95,7 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
                     ?.firstOrNull()
                     ?.trim()
                     ?: return newFixedLengthResponse("Missing prompt")
-                val maxTokens = session.parameters["max_tokens"]
+                session.parameters["max_tokens"]
                     ?.firstOrNull()
                     ?.toIntOrNull()
                     ?: 64
