@@ -3,6 +3,7 @@ package com.example.llmserverapp.core.models
 import com.example.llmserverapp.AppScope
 import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
+import com.example.llmserverapp.ServerController.settings
 import com.example.llmserverapp.core.logging.LogBuffer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -222,7 +223,7 @@ object ModelManager {
             return
         }
 
-        val result = LlamaBridge.loadModel(model.localPath)
+        val result = LlamaBridge.loadModel(model.localPath, settings.value.threads)
         if (result == 0L) {
             LogBuffer.error("Native loadModel returned 0", tag = "MODEL")
             return
@@ -230,6 +231,8 @@ object ModelManager {
 
         loadedModelId = id
         ServerController.modelPath = model.localPath
+
+        ServerController.setLoadedModel(model.prettyName)
 
         _models.update { list ->
             list.map {

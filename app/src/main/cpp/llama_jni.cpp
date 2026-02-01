@@ -222,7 +222,8 @@ extern "C" {
 
 // ---------------- Load Model ----------------
 JNIEXPORT jlong JNICALL Java_com_example_llmserverapp_LlamaBridge_loadModel(
-    JNIEnv *env, jclass, jstring j_model_path) {
+        JNIEnv *env, jobject thiz, jstring j_model_path, jint j_threads)
+ {
   ScopedLock lock(g_mutex);
   LOGD("Loading model...");
 
@@ -259,7 +260,8 @@ JNIEXPORT jlong JNICALL Java_com_example_llmserverapp_LlamaBridge_loadModel(
 
   g_cparams = llama_context_default_params();
   g_cparams.n_ctx = 2048;
-  g_cparams.n_threads = 4;
+  g_cparams.n_threads = j_threads;
+  g_cparams.n_threads_batch = j_threads;
 
   g_ctx = llama_init_from_model(g_model, g_cparams);
   if (!g_ctx) {
@@ -278,9 +280,15 @@ JNIEXPORT jlong JNICALL Java_com_example_llmserverapp_LlamaBridge_loadModel(
   return (jlong)(uintptr_t)g_ctx;
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_llmserverapp_LlamaBridge_getThreadCount(JNIEnv*, jobject thiz) {
+    return g_cparams.n_threads;
+}
+
+
 // ---------------- Unload Model ----------------
 JNIEXPORT void JNICALL
-Java_com_example_llmserverapp_LlamaBridge_unloadModel(JNIEnv *, jclass) {
+Java_com_example_llmserverapp_LlamaBridge_unloadModel(JNIEnv *, jobject thiz) {
   ScopedLock lock(g_mutex);
   LOGD("Unloading model...");
   if (g_ctx) {
@@ -363,7 +371,7 @@ JNIEXPORT jintArray JNICALL Java_com_example_llmserverapp_LlamaBridge_tokenize(
 
 // ---------------- Generate with Stats ----------------
 JNIEXPORT jstring JNICALL
-Java_com_example_llmserverapp_LlamaBridge_generateWithStats(JNIEnv *env, jclass,
+Java_com_example_llmserverapp_LlamaBridge_generateWithStats(JNIEnv *env, jobject thiz,
                                                             jstring j_prompt) {
   ScopedLock lock(g_mutex);
   if (!g_ctx || !g_vocab) {

@@ -11,7 +11,9 @@ object LlamaBridge {
         System.loadLibrary("native-lib")
     }
 
-    external fun loadModel(path: String): Long
+    external fun loadModel(path: String, threads: Int): Long
+    external fun getThreadCount(): Int
+
     external fun unloadModel()
 
     fun benchmarkModel(modelName: String, onLog: (String) -> Unit) {
@@ -24,7 +26,7 @@ object LlamaBridge {
     }
 
     // IMPORTANT: JNI returns JSON STRING, not LlamaResult
-    external fun generateWithStats(prompt: String): String
+    external fun generateWithStats(text: String): String
 
     data class BenchmarkConfig(
         var threads: Int = 4,

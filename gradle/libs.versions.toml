@@ -10,6 +10,7 @@ nanohttpd = "2.3.1"
 okhttp = "5.3.2"
 lifecycle-runtime = "2.10.0"
 uiGraphics = "1.10.1"
+foundation = "1.10.2"
 
 [libraries]
 nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
@@ -25,6 +26,7 @@ compose-material3 = { group = "androidx.compose.material3", name = "material3", 
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "material-icons" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "uiGraphics" }
+androidx-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "foundation" }
 
 [plugins]
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "compose-compiler" }
