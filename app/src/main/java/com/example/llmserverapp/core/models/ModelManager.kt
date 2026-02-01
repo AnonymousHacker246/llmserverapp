@@ -1,12 +1,11 @@
 package com.example.llmserverapp.core.models
 
-import android.content.Intent
 import com.example.llmserverapp.AppScope
 import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.ServerController.settings
 import com.example.llmserverapp.core.logging.LogBuffer
-import com.example.llmserverapp.core.services.DownloadService
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +13,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.isActive
 import java.net.URL
 
 enum class ModelStatus {
@@ -37,8 +37,8 @@ data class ModelDescriptor(
 
 object ModelManager {
 
-    // Global, app-lifecycle scope
     private val scope = AppScope.io
+
     private fun prettyBaseName(fileName: String): String {
         return fileName
             .removeSuffix(".gguf")
@@ -46,15 +46,11 @@ object ModelManager {
             .lowercase()
     }
 
-
     private val _models = MutableStateFlow<List<ModelDescriptor>>(emptyList())
     val models: StateFlow<List<ModelDescriptor>> = _models
 
     private var loadedModelId: String? = null
 
-    // ------------------------------------------------------------
-    // Refresh model list
-    // ------------------------------------------------------------
     private var didInitialRefresh = false
 
     fun prettySize(bytes: Long): String {
@@ -100,7 +96,6 @@ object ModelManager {
                 )
             }
 
-            // Preserve loaded state based on loadedModelId
             val merged = descriptors.map { desc ->
                 if (desc.id == loadedModelId)
                     desc.copy(status = ModelStatus.Loaded)
@@ -112,18 +107,9 @@ object ModelManager {
         }
     }
 
-    // ------------------------------------------------------------
-    // Download model (with progress + integrity check)
-    // ------------------------------------------------------------
     fun downloadModel(id: String) {
         scope.launch {
 
-            // 1. Start foreground service immediately
-
-            val ctx = ServerController.appContext
-            ctx.startForegroundService(Intent(ctx, DownloadService::class.java))
-
-            // 2. Update UI state to "Downloading"
             _models.update { list ->
                 list.map {
                     if (it.id == id) it.copy(status = ModelStatus.Downloading, progress = 0f)
@@ -135,7 +121,7 @@ object ModelManager {
             val url = model.downloadUrl
 
             try {
-                // 3. Prepare files + metadata
+                val ctx = ServerController.appContext
                 val meta = fetchModelMetadata(url)
                 val finalFile = File(ctx.filesDir, model.fileName)
                 val tempFile = File(ctx.filesDir, model.fileName + ".tmp")
@@ -156,14 +142,11 @@ object ModelManager {
                 var downloaded = existingBytes
                 var read: Int
 
-// ⭐ Smooth progress updater — runs every 100ms regardless of network speed
                 val progressJob = scope.launch {
-                    var lastNotify = 0L
-                    while (true) {
-                        val now = System.currentTimeMillis()
-                        val progress = downloaded.toFloat() / totalBytes.toFloat()
+                    while (isActive) {
+                        val progress = (downloaded.toFloat() / totalBytes.toFloat())
+                            .coerceIn(0f, 1f)
 
-                        // UI updates every 100ms
                         _models.update { list ->
                             list.map {
                                 if (it.id == id) it.copy(progress = progress)
@@ -171,29 +154,34 @@ object ModelManager {
                             }
                         }
 
-                        // Notification updates every 1 second
-                        if (now - lastNotify >= 1000) {
-                            DownloadService.instance?.updateProgress(progress)
-                            lastNotify = now
-                        }
-
                         delay(100)
                     }
                 }
 
-
-// ⭐ Pure I/O loop — no UI work here
                 while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)
                     downloaded += read
                 }
 
-                progressJob.cancel()
+                progressJob.cancelAndJoin()
 
                 output.flush()
                 output.close()
                 input.close()
 
+                // Rename .tmp → final
+                if (tempFile.exists()) {
+                    tempFile.renameTo(finalFile)
+                }
+
+                // Final UI update
+                _models.update { list ->
+                    list.map {
+                        if (it.id == id)
+                            it.copy(status = ModelStatus.Downloaded, progress = 1f)
+                        else it
+                    }
+                }
 
             } catch (e: Exception) {
                 LogBuffer.error("Download failed: ${e.message}", tag = "MODEL")
@@ -204,17 +192,11 @@ object ModelManager {
                         else it
                     }
                 }
-            } finally {
-                // 8. Always stop foreground service
-                DownloadService.instance?.stopServiceSafely()
             }
         }
     }
 
 
-    // ------------------------------------------------------------
-// Load Model
-// ------------------------------------------------------------
     fun loadModel(id: String) {
         val model = _models.value.firstOrNull { it.id == id } ?: return
         val file = File(model.localPath)
@@ -246,17 +228,12 @@ object ModelManager {
         }
     }
 
-    // ------------------------------------------------------------
-// Benchmark (kept as-is, but using AppScope.default if desired)
-// ------------------------------------------------------------
     fun runBenchmark() {
         val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded }
         if (loaded == null) {
             LogBuffer.info("Benchmark requires a loaded model")
             return
         }
-
-        // LogBuffer.info("Starting benchmark for ${loaded.prettyName}")
 
         AppScope.default.launch {
             try {
@@ -269,9 +246,6 @@ object ModelManager {
         }
     }
 
-    // ------------------------------------------------------------
-// Unload Model
-// ------------------------------------------------------------
     fun unloadModel() {
         LogBuffer.info("Unloading model…", tag = "MODEL")
 
