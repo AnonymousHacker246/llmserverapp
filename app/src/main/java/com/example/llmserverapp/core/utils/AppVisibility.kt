@@ -7,7 +7,8 @@ import com.example.llmserverapp.core.logging.LogBuffer
 
 object AppVisibility : DefaultLifecycleObserver {
 
-    var isForeground = true
+    @Volatile
+    var isForeground: Boolean = true
         private set
 
     fun init() {
@@ -15,12 +16,17 @@ object AppVisibility : DefaultLifecycleObserver {
     }
 
     override fun onStart(owner: LifecycleOwner) {
-        isForeground = true
-        LogBuffer.info("App Visibility = Foreground")
+        update(true)
     }
 
     override fun onStop(owner: LifecycleOwner) {
-        isForeground = false
-        LogBuffer.info("App Visibility = Background")
+        update(false)
+    }
+
+    private fun update(value: Boolean) {
+        if (isForeground != value) {
+            isForeground = value
+            LogBuffer.info("App Visibility = ${if (value) "Foreground" else "Background"}")
+        }
     }
 }
