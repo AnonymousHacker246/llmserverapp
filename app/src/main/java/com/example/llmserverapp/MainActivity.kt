@@ -1,6 +1,5 @@
 package com.example.llmserverapp
 
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,16 +15,16 @@ class MainActivity : ComponentActivity() {
 
         ServerController.init(this)
         window.setBackgroundDrawableResource(android.R.color.black)
-
+        // WindowCompat.setDecorFitsSystemWindows(window, false)
         // --- Modern fullscreen API ---
-        window.decorView.post {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.insetsController?.apply {
-                    systemBarsBehavior =
-                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                }
-            }
-        }
+//        window.decorView.post {
+//            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+//                window.insetsController?.apply {
+//                    systemBarsBehavior =
+//                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+//                }
+//            }
+//        }
 
         // --- Compose content ---
         setContent {

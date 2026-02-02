@@ -53,22 +53,10 @@ fun ServerScreen() {
 
     var showMetricsPopup by remember { mutableStateOf(false) }
     var showSettingsPopup by remember { mutableStateOf(false) }
-    var showRequestsPopup by remember { mutableStateOf(false) }
     var portText by remember { mutableStateOf(settings.port.toString()) }
     var maxTokensText by remember { mutableStateOf(settings.maxTokens.toString()) }
     var temperatureText by remember { mutableStateOf(settings.temperature.toString()) }
     var threadsText by remember { mutableStateOf(settings.threads.toString()) }
-
-
-    // -------------------------
-    // Popup Block (unused now)
-    // -------------------------
-    @Composable
-    fun PopupBlock(
-        onDismiss: () -> Unit,
-        content: @Composable ColumnScope.() -> Unit
-    ) { /* unchanged */
-    }
 
     // -------------------------
     // Block Outline
@@ -78,6 +66,46 @@ fun ServerScreen() {
         modifier: Modifier = Modifier,
         content: @Composable ColumnScope.() -> Unit
     ) { /* unchanged */
+    }
+
+    @Composable
+    fun ThinFloatField(
+        value: String,
+        onValueChange: (String) -> Unit,
+        onNumberCommit: (Float) -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = { new ->
+                if (new.isEmpty()) {
+                    onValueChange("")
+                    return@BasicTextField
+                }
+                if (new.all { it.isDigit() || it == '.' } && new.count { it == '.' } <= 1) {
+                    onValueChange(new)
+                    new.toFloatOrNull()?.let(onNumberCommit)
+                }
+            },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = modifier
+                .width(60.dp)
+                .padding(vertical = 4.dp),
+            decorationBox = { inner ->
+                Column {
+                    inner()
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                    )
+                }
+            }
+        )
     }
 
     @Composable
@@ -94,7 +122,7 @@ fun ServerScreen() {
                     onValueChange("")
                     return@BasicTextField
                 }
-                if (new.all { it.isDigit() }) {
+                if (new.all { it.isDigit()}) {
                     onValueChange(new)
                     new.toIntOrNull()?.let(onNumberCommit)
                 }
@@ -421,11 +449,12 @@ fun ServerScreen() {
             Text("Port")
             ThinNumberField(
                 value = portText,
-                onValueChange = {new ->
+                onValueChange = { new ->
                     portText = new
-                    new.toIntOrNull()?.let{
+                    new.toIntOrNull()?.let {
                         ServerController.updatePort(it)
-                    } },
+                    }
+                },
                 onNumberCommit = { ServerController.updatePort(it) }
             )
         }
@@ -455,17 +484,20 @@ fun ServerScreen() {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("Temperature")
-            ThinNumberField(
+            ThinFloatField(
                 value = temperatureText,
                 onValueChange = { new ->
                     temperatureText = new
-                    new.toIntOrNull()?.let {
-                        ServerController.updateTemperature(it.toFloat())
+                    new.toFloatOrNull()?.let{
+                        ServerController.updateTemperature(it)
                     }
                 },
-                onNumberCommit = { ServerController.updateTemperature(it.toFloat()) }
+                onNumberCommit = { ServerController.updateTemperature(it) }
             )
+
         }
+
+
 
         Row(
             modifier = Modifier
@@ -477,14 +509,15 @@ fun ServerScreen() {
                 value = threadsText,
                 onValueChange = { new ->
                     threadsText = new
-                    new.toIntOrNull()?.let{
+                    new.toIntOrNull()?.let {
                         ServerController.updateThreads(it)
-                    }},
+                    }
+                },
                 onNumberCommit = { ServerController.updateThreads(it) }
             )
         }
 
-        // Context Length (read‑only)
+// Context Length (read‑only)
         ReadOnlyRow(
             label = "Context Length",
             value = settings.contextLength.toString()

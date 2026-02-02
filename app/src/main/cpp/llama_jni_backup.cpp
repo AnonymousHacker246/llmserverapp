@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "llama/llama.h"
+#include "llama.h"
 
 static std::mutex g_mutex;
 

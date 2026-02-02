@@ -46,7 +46,9 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
                 val prompt = session.parameters["prompt"]
                     ?.firstOrNull()
                     ?.trim()
-                    ?: return newFixedLengthResponse("Missing prompt")
+                    ?.replace(Regex("[\\u0000-\\u001F\\u007F]"), "")
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: return newFixedLengthResponse("Missing or empty prompt")
 
                 val maxTokens = session.parameters["max_tokens"]
                     ?.firstOrNull()
@@ -60,12 +62,14 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
                 var tokens: Int = 0
 
                 try {
-                    val jsonString = LlamaBridge.generateWithStats(prompt)
-                    val json = JSONObject(jsonString)
-
-                    result = json.optString("text", "")
-                    tokens = json.optInt("generated", 0)
-
+                    val cfg = ServerController.settings.value
+                    result = LlamaBridge.generate(
+                        prompt,
+                        cfg.temperature,
+                        cfg.maxTokens,
+                        cfg.threads
+                    )
+                    tokens = result.length
                 } catch (e: Exception) {
                     LogBuffer.error("Generation failed: ${e.message}", "MODEL")
                     return newFixedLengthResponse("Error: ${e.message}")

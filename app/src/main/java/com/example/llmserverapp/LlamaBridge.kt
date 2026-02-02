@@ -13,8 +13,10 @@ object LlamaBridge {
 
     external fun loadModel(path: String, threads: Int): Long
     external fun getThreadCount(): Int
-
+    external fun generate(prompt: String, temperature: Float, maxTokens: Int, threads: Int): String
+    external fun runInference(prompt: String, onToken: (String) -> Unit)
     external fun unloadModel()
+
 
     fun benchmarkModel(modelName: String, onLog: (String) -> Unit) {
         adaptiveBenchmark(

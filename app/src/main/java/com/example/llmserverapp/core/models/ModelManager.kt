@@ -10,10 +10,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
-import kotlinx.coroutines.isActive
 import java.net.URL
 
 enum class ModelStatus {
@@ -65,6 +65,33 @@ object ModelManager {
             else -> "$bytes B"
         }
     }
+
+    suspend fun runInference(prompt: String): String {
+        val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded }
+            ?: return "No model loaded."
+
+        // Pull all sampling settings from ServerController
+        val settings = ServerController.settings.value
+        val temp = settings.temperature
+        val max = settings.maxTokens
+        val threads = settings.threads
+
+
+            return try {
+                // Pass ALL parameters into JNI
+                LlamaBridge.generate(
+                    prompt,
+                    settings.temperature,
+                    settings.maxTokens,
+                    settings.threads
+                )
+
+            } catch (e: Exception) {
+                "Inference failed: ${e.message}"
+            }
+        }
+
+
 
     fun refreshModels(force: Boolean = false) {
         if (!force && didInitialRefresh) return

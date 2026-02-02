@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "llama/llama.h"
+#include "llama.h"
 
 #define LOG_TAG "LLM_DEBUG"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
