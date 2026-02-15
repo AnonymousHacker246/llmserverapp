@@ -1,0 +1,43 @@
+{
+  "models": [
+    {
+      "id": "tinyllama",
+      "name": "TinyLlama 1.1B Chat",
+      "type": "llama",
+      "url": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    },
+    {
+      "id": "codellama",
+      "name": "CodeLlama 7B Q5_K_S",
+      "type": "llama",
+      "url": "https://huggingface.co/TheBloke/CodeLlama-7B-GGUF/resolve/main/codellama-7b.Q5_K_S.gguf"
+    },
+    {
+      "id": "sd15",
+      "name": "Stable Diffusion 1.5",
+      "type": "sd",
+      "parts": [
+        {
+          "name": "CLIP",
+          "file": "clip_weights.bin",
+          "url": "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/clip_weights.bin"
+        },
+        {
+          "name": "UNet Part 1",
+          "file": "unet_weights.bin.part-aa",
+          "url": "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/unet_weights.bin.part-aa"
+        },
+        {
+          "name": "UNet Part 2",
+          "file": "unet_weights.bin.part-ab",
+          "url": "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/unet_weights.bin.part-ab"
+        },
+        {
+          "name": "VAE",
+          "file": "vae_weights.bin",
+          "url": "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/vae_weights.bin"
+        }
+      ]
+    }
+  ]
+}

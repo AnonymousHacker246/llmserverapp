@@ -1,4 +1,4 @@
-package com.example.llmserverapp.ui.screens
+package com.example.llmserverapp.ui.screens.server
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,12 +41,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.llmserverapp.ServerController
+import com.example.llmserverapp.core.models.ModelManager
+import com.example.llmserverapp.core.models.ModelStatus
 
 @Composable
 fun ServerScreen() {
 
     val isRunning by ServerController.isRunning.collectAsState()
-    val loadedModel by ServerController.loadedModel.collectAsState()
+    val models by ModelManager.models.collectAsState()
+    val loadedModel = models.firstOrNull() { it.status == ModelStatus.Loaded }
     val metrics by ServerController.metrics.collectAsState()
     val settings by ServerController.settings.collectAsState()
     val uptime by ServerController.uptime.collectAsState()
@@ -384,7 +387,7 @@ fun ServerScreen() {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Loaded Model", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
-                    Text(loadedModel ?: "None")
+                    Text(loadedModel?.prettyName ?: "None")
                 }
             }
         }

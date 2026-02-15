@@ -3,6 +3,7 @@ package com.example.llmserverapp
 import com.example.llmserverapp.core.logging.LogBuffer
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
+import android.util.Base64
 
 class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
@@ -10,27 +11,31 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
         LogBuffer.info("HTTP ${session.method} ${session.uri}", tag = "HTTP")
 
-        if (session.parameters.isNotEmpty()) {
-            LogBuffer.debug("Query params: ${session.parameters}", tag = "HTTP")
-        }
-
+        // Parse POST body
+        var postBody: String? = null
         if (session.method == Method.POST) {
             val body = HashMap<String, String>()
             session.parseBody(body)
-            val postData = body["postData"]
-            if (!postData.isNullOrBlank()) {
-                LogBuffer.debug("POST body: $postData", tag = "HTTP")
+            postBody = body["postData"]
+            if (!postBody.isNullOrBlank()) {
+                LogBuffer.debug("POST body: $postBody", tag = "HTTP")
             }
         }
 
         return when (session.uri) {
 
+            // -----------------------------
+            // STATUS
+            // -----------------------------
             "/status" -> {
                 newFixedLengthResponse(
                     if (ServerController.isRunning.value) "running" else "stopped"
                 )
             }
 
+            // -----------------------------
+            // LOGS
+            // -----------------------------
             "/logs" -> {
                 val logs = LogBuffer.logs.value.joinToString("\n") { entry ->
                     "[${entry.level}] ${entry.tag ?: ""} ${entry.message}"
@@ -38,51 +43,41 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
                 newFixedLengthResponse(logs)
             }
 
-            "/diagnose",
-            "/generate" -> {
+            // -----------------------------
+            // LLM: /v1/chat/completions
+            // -----------------------------
+            "/v1/chat/completions" -> {
+                if (postBody == null) {
+                    return newFixedLengthResponse("Missing POST body")
+                }
 
+                val json = JSONObject(postBody)
+                val prompt = json.optString("prompt", "").trim()
+
+                if (prompt.isEmpty()) {
+                    return newFixedLengthResponse("Missing prompt")
+                }
+
+                val cfg = ServerController.settings.value
                 val start = System.currentTimeMillis()
 
-                val prompt = session.parameters["prompt"]
-                    ?.firstOrNull()
-                    ?.trim()
-                    ?.replace(Regex("[\\u0000-\\u001F\\u007F]"), "")
-                    ?.takeIf { it.isNotEmpty() }
-                    ?: return newFixedLengthResponse("Missing or empty prompt")
-
-                val maxTokens = session.parameters["max_tokens"]
-                    ?.firstOrNull()
-                    ?.toIntOrNull()
-                    ?: 64
-
-                LogBuffer.info("Generating response (maxTokens=$maxTokens)", tag = "MODEL")
-
-                // These must be declared BEFORE the try block
-                var result: String = ""
-                var tokens: Int = 0
-
-                try {
-                    val cfg = ServerController.settings.value
-                    result = LlamaBridge.generate(
+                val result: String = try {
+                    LlamaBridge.generate(
                         prompt,
                         cfg.temperature,
                         cfg.maxTokens,
                         cfg.threads
                     )
-                    tokens = result.length
                 } catch (e: Exception) {
-                    LogBuffer.error("Generation failed: ${e.message}", "MODEL")
+                    LogBuffer.error("LLM generation failed: ${e.message}", "MODEL")
                     return newFixedLengthResponse("Error: ${e.message}")
                 }
 
                 val durationMs = System.currentTimeMillis() - start
-                val tokensPerSec =
-                    if (durationMs > 0) tokens.toFloat() / (durationMs / 1000f) else 0f
+                val tokens = result.length
+                val tps = if (durationMs > 0) tokens / (durationMs / 1000f) else 0f
 
-                // Update metrics
-                ServerController.updateMetrics(tokensPerSec, durationMs, tokens)
-
-                // Add request to recent list
+                ServerController.updateMetrics(tps, durationMs, tokens)
                 ServerController.addRequest(
                     ServerController.RequestInfo(
                         path = session.uri,
@@ -91,22 +86,58 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
                     )
                 )
 
-                LogBuffer.info("Completed ${session.uri} in ${durationMs}ms", tag = "HTTP")
-
-                val threads = LlamaBridge.getThreadCount()
-
                 val responseJson = JSONObject().apply {
                     put("text", result)
                     put("generated", tokens)
-                    put("threads", threads)
                     put("duration_ms", durationMs)
-                    put("tokens_per_sec", tokensPerSec)
+                    put("tokens_per_sec", tps)
                 }
 
                 return newFixedLengthResponse(responseJson.toString())
-
             }
 
+            // -----------------------------
+            // SD: /v1/images/generations
+            // -----------------------------
+            "/v1/images/generations" -> {
+                if (postBody == null) {
+                    return newFixedLengthResponse("Missing POST body")
+                }
+
+                val json = JSONObject(postBody)
+                val prompt = json.optString("prompt", "").trim()
+                val steps = json.optInt("steps", 20)
+                val guidance = json.optDouble("guidance", 4.0).toFloat()
+
+                if (prompt.isEmpty()) {
+                    return newFixedLengthResponse("Missing prompt")
+                }
+
+                val start = System.currentTimeMillis()
+
+                val bytes: ByteArray = try {
+                    StableDiffusionBridge.sdGenerate(prompt, steps, guidance)
+                        ?: return newFixedLengthResponse("SD model not loaded")
+                } catch (e: Exception) {
+                    LogBuffer.error("SD generation failed: ${e.message}", "MODEL")
+                    return newFixedLengthResponse("Error: ${e.message}")
+                }
+
+                val durationMs = System.currentTimeMillis() - start
+
+                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+                val responseJson = JSONObject().apply {
+                    put("image", base64)
+                    put("duration_ms", durationMs)
+                }
+
+                return newFixedLengthResponse(responseJson.toString())
+            }
+
+            // -----------------------------
+            // UNKNOWN
+            // -----------------------------
             else -> newFixedLengthResponse("unknown endpoint")
         }
     }

@@ -208,6 +208,11 @@ fun DownloadModelsSheet(onClose: () -> Unit) {
 
 @Composable
 fun DownloadModelRow(model: ModelDescriptor) {
+
+    val percent = remember(model.progress) {
+        (model.progress?.times(100)?.toInt() ?: 0)
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -217,6 +222,15 @@ fun DownloadModelRow(model: ModelDescriptor) {
         Column {
             Text(model.prettyName, style = MaterialTheme.typography.titleMedium)
             Text(prettySize(model.sizeBytes), color = Color.Gray)
+
+            if (model.status == ModelStatus.Downloading && model.progress != null) {
+                Text(
+                    text = "$percent%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
         }
 
         when (model.status) {
@@ -226,11 +240,13 @@ fun DownloadModelRow(model: ModelDescriptor) {
                 }
 
             ModelStatus.Downloading ->
-                LinearProgressIndicator(
-                    progress = { model.progress ?: 0f },
-                    modifier = Modifier
-                        .size(width = 80.dp, height = 4.dp)
-                )
+                Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                    LinearProgressIndicator(
+                        progress = { model.progress ?: 0f },
+                        modifier = Modifier
+                            .size(width = 80.dp, height = 4.dp)
+                    )
+                }
 
             ModelStatus.Downloaded ->
                 TextButton(onClick = { ModelManager.loadModel(model.id) }){

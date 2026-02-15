@@ -1,6 +1,5 @@
 package com.example.llmserverapp.ui.navigation
 
-import com.example.llmserverapp.ui.screens.ServerScreen
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -10,6 +9,7 @@ import com.example.llmserverapp.ui.screens.account.AccountScreen
 import com.example.llmserverapp.ui.screens.home.HomeScreen
 import com.example.llmserverapp.ui.screens.logs.LogsScreen
 import com.example.llmserverapp.ui.screens.models.ModelsScreen
+import com.example.llmserverapp.ui.screens.server.ServerScreen
 import com.example.llmserverapp.ui.screens.settings.SettingsScreen
 import com.example.llmserverapp.ui.screens.store.StoreScreen
 
