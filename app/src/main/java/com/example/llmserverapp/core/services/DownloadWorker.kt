@@ -28,8 +28,21 @@ class DownloadWorker(
         val fileName = finalFile.name
 
         try {
+            // ------------------------------------------------------------
+            // 1. If final file already exists → skip this file entirely
+            // ------------------------------------------------------------
+            if (finalFile.exists()) {
+                DownloadProgressBus.update(modelId, fileName, 1f)
+                ModelManager.onFileDownloadComplete(modelId)
+                return@withContext Result.success()
+            }
+
+            // Ensure directory exists
             tempFile.parentFile?.mkdirs()
 
+            // ------------------------------------------------------------
+            // 2. Resume if .tmp exists
+            // ------------------------------------------------------------
             var downloaded = if (tempFile.exists()) tempFile.length() else 0L
 
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -42,6 +55,9 @@ class DownloadWorker(
             val contentLength = conn.getHeaderFieldLong("Content-Length", -1L)
             val total = if (contentLength > 0) contentLength + downloaded else -1L
 
+            // ------------------------------------------------------------
+            // 3. Download loop
+            // ------------------------------------------------------------
             conn.inputStream.use { input ->
                 FileOutputStream(tempFile, downloaded > 0).use { output ->
                     val buffer = ByteArray(64 * 1024)
@@ -51,6 +67,7 @@ class DownloadWorker(
                     while (true) {
                         read = input.read(buffer)
                         if (read == -1) break
+
                         output.write(buffer, 0, read)
                         downloaded += read
 
@@ -64,17 +81,18 @@ class DownloadWorker(
                 }
             }
 
-            // Final 100% update if we know total
+            // ------------------------------------------------------------
+            // 4. Finalize
+            // ------------------------------------------------------------
             if (total > 0) {
                 DownloadProgressBus.update(modelId, fileName, 1f)
             }
 
             tempFile.renameTo(finalFile)
-
-            // Let ModelManager check if the whole model is now complete
             ModelManager.onFileDownloadComplete(modelId)
 
             Result.success()
+
         } catch (e: Exception) {
             LogBuffer.error("DownloadWorker failed: ${e.message}", tag = "MODEL")
             Result.failure()

@@ -51,6 +51,7 @@ bool sd_init(const std::string& model_dir) {
         return false;
     }
 
+
     LOGSD("All Modules loaded.");
     g_sd_ready = true;
     return true;
@@ -72,23 +73,36 @@ SdImage sd_generate(
         const SdConfig& cfg
 ) {
     if (!g_sd_ready) {
-        LOGSD("sd_generate called before sd_init");
+        LOGSD("sd_generate: called before sd_init");
         return {};
     }
+
+    LOGSD("sd_generate: begin, prompt='%s', steps=%d, guidance=%f",
+          prompt.c_str(), cfg.steps, cfg.guidance);
 
     // 1) output size
     int out_w = (cfg.mode == SdMode::HighRes512) ? 512 : 32;
     int out_h = (cfg.mode == SdMode::HighRes512) ? 512 : 32;
+    LOGSD("sd_generate: out_w=%d out_h=%d", out_w, out_h);
 
     int latent_c = g_latent_c;
     int latent_w = out_w / 8;
     int latent_h = out_h / 8;
+    LOGSD("sd_generate: latent shape c=%d h=%d w=%d", latent_c, latent_h, latent_w);
 
     // 2) CLIP text embedding
+    LOGSD("sd_generate: calling sd_clip_encode");
     std::vector<float> clip_emb = sd_clip_encode(prompt);
+    LOGSD("sd_generate: sd_clip_encode returned, size=%zu", clip_emb.size());
+
+    if (clip_emb.empty()) {
+        LOGSD("sd_generate: ERROR - clip_emb is empty");
+        return {};
+    }
 
     // 3) scheduler
     int steps = std::max(1, cfg.steps);
+    LOGSD("sd_generate: init scheduler, steps=%d", steps);
     sd_scheduler_init(steps);
 
     // 4) initial latent: Gaussian noise
@@ -97,20 +111,22 @@ SdImage sd_generate(
     x.h = latent_h;
     x.w = latent_w;
     x.data.resize((size_t)latent_c * latent_h * latent_w);
+    LOGSD("sd_generate: latent data size=%zu", x.data.size());
 
     for (float& v : x.data) {
         v = g_normal(g_rng);
     }
 
-    // 5) diffusion loop (DDIM-style, no guidance for now)
+    // 5) diffusion loop
+    LOGSD("sd_generate: starting diffusion loop");
     for (int i = steps - 1; i >= 0; --i) {
         float abar_t = sd_scheduler_alpha_cumprod(i);
         float abar_prev = (i > 0) ? sd_scheduler_alpha_cumprod(i - 1) : 1.0f;
 
-        // predict noise eps_t = eps(x_t, t, cond)
+        LOGSD("sd_generate: step %d, calling sd_unet_forward", i);
         UnetLatent eps = sd_unet_forward(x, clip_emb, (float)i / (float)steps);
+        LOGSD("sd_generate: sd_unet_forward returned, eps size=%zu", eps.data.size());
 
-        // x0_t = (x_t - sqrt(1 - abar_t) * eps_t) / sqrt(abar_t)
         float sqrt_abar_t = std::sqrt(abar_t);
         float sqrt_one_minus_abar_t = std::sqrt(std::max(0.0f, 1.0f - abar_t));
 
@@ -120,7 +136,6 @@ SdImage sd_generate(
             x0[k] = (x.data[k] - sqrt_one_minus_abar_t * eps.data[k]) / (sqrt_abar_t + 1e-8f);
         }
 
-        // x_{t-1} = sqrt(abar_prev) * x0 + sqrt(1 - abar_prev) * eps_t
         float sqrt_abar_prev = std::sqrt(abar_prev);
         float sqrt_one_minus_abar_prev = std::sqrt(std::max(0.0f, 1.0f - abar_prev));
 
@@ -128,8 +143,13 @@ SdImage sd_generate(
             x.data[k] = sqrt_abar_prev * x0[k] + sqrt_one_minus_abar_prev * eps.data[k];
         }
     }
+    LOGSD("sd_generate: diffusion loop done");
 
     // 6) VAE decode latent → RGB image
+    LOGSD("sd_generate: calling sd_vae_decode");
     SdImage img = sd_vae_decode(x.data, out_w, out_h);
+    LOGSD("sd_generate: sd_vae_decode returned, w=%d h=%d rgba=%zu",
+          img.width, img.height, img.rgba.size());
+
     return img;
 }

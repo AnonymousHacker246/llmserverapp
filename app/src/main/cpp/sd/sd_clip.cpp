@@ -232,8 +232,8 @@ bool sd_clip_init(const std::string& model_dir) {
 
         // layernorm 1
         {
-            std::string ln1_w = "text_model.encoder.layers." + std::to_string(l) + ".layernorm1.weight";
-            std::string ln1_b = "text_model.encoder.layers." + std::to_string(l) + ".layernorm1.bias";
+            std::string ln1_w = "text_model.encoder.layers." + std::to_string(l) + ".layer_norm1.weight";
+            std::string ln1_b = "text_model.encoder.layers." + std::to_string(l) + ".layer_norm1.bias";
             const WeightTensor* g = find_tensor(tensors, ln1_w);
             const WeightTensor* bt = find_tensor(tensors, ln1_b);
             if (!g || !bt || g->shape[0] != (uint32_t)D || bt->shape[0] != (uint32_t)D) {
@@ -246,8 +246,8 @@ bool sd_clip_init(const std::string& model_dir) {
 
         // layernorm 2
         {
-            std::string ln2_w = "text_model.encoder.layers." + std::to_string(l) + ".layernorm2.weight";
-            std::string ln2_b = "text_model.encoder.layers." + std::to_string(l) + ".layernorm2.bias";
+            std::string ln2_w = "text_model.encoder.layers." + std::to_string(l) + ".layer_norm2.weight";
+            std::string ln2_b = "text_model.encoder.layers." + std::to_string(l) + ".layer_norm2.bias";
             const WeightTensor* g = find_tensor(tensors, ln2_w);
             const WeightTensor* bt = find_tensor(tensors, ln2_b);
             if (!g || !bt || g->shape[0] != (uint32_t)D || bt->shape[0] != (uint32_t)D) {

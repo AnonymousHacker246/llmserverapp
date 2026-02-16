@@ -105,23 +105,18 @@ class DownloadService : Service() {
         temp.parentFile?.mkdirs()
 
         var downloaded = if (temp.exists()) temp.length() else 0L
-
         val url = URL(urlStr)
         val conn = (url.openConnection() as HttpURLConnection).apply {
-            if (downloaded > 0) {
-                setRequestProperty("Range", "bytes=$downloaded-")
-            }
+            if (downloaded > 0) setRequestProperty("Range", "bytes=$downloaded-")
             connect()
         }
 
-        val total = (conn.getHeaderFieldLong("Content-Length", -1L) +
-                downloaded).takeIf { it > 0 } ?: -1L
+        val total = (conn.getHeaderFieldLong("Content-Length", -1L) + downloaded).takeIf { it > 0 } ?: -1L
 
         conn.inputStream.use { input ->
             temp.outputStream().use { output ->
-                if (downloaded > 0) {
-                    output.channel.position(downloaded)
-                }
+                if (downloaded > 0) output.channel.position(downloaded)
+
 
                 val buffer = ByteArray(1024 * 64)
                 var read: Int
