@@ -39,10 +39,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.core.models.ModelDescriptor
 import com.example.llmserverapp.core.models.ModelManager
 import com.example.llmserverapp.core.models.ModelManager.prettySize
 import com.example.llmserverapp.core.models.ModelStatus
+import com.example.llmserverapp.ui.screens.server.ServerScreen
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -235,7 +237,12 @@ fun DownloadModelRow(model: ModelDescriptor) {
 
         when (model.status) {
             ModelStatus.NotDownloaded ->
-                TextButton(onClick = { ModelManager.downloadModel(model.id) }) {
+                TextButton(onClick = {
+                    ModelManager.getEntryById(model.id)?.let { entry ->
+                        ModelManager.downloadModel(entry)
+                    }
+                }
+                ){
                     Text("Download")
                 }
 

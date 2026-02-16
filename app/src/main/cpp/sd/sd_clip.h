@@ -1,44 +1,65 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <unordered_map>
 
-// ------------------------------------------------------------
-// 1. Define ClipWeights FIRST
-// ------------------------------------------------------------
+// ============================================================================
+// CLIP Weights
+// ============================================================================
+
 struct ClipWeights {
+    // Embeddings
     std::vector<float> token_embedding;   // [vocab_size * dim]
-    std::vector<float> pos_embedding;     // [77 * dim]
+    std::vector<float> pos_embedding;     // [max_len * dim]
+
     int vocab_size = 0;
-    int dim = 768;
+    int dim = 768;        // CLIP text encoder hidden size
+    int max_len = 77;     // Stable Diffusion uses 77 tokens
 };
 
-// ------------------------------------------------------------
-// 2. Define Transformer Block structs
-// ------------------------------------------------------------
+// ============================================================================
+// Transformer Block
+// ============================================================================
+
 struct ClipTransformerBlock {
-    std::vector<float> ln1_gamma, ln1_beta;
-    std::vector<float> ln2_gamma, ln2_beta;
+    // LayerNorm 1
+    std::vector<float> ln1_gamma;
+    std::vector<float> ln1_beta;
 
-    std::vector<float> attn_wq, attn_wk, attn_wv, attn_wo;
-    std::vector<float> mlp_w1, mlp_w2;
+    // Attention weights (single-head or multi-head flattened)
+    std::vector<float> attn_wq;   // [dim * dim]
+    std::vector<float> attn_wk;   // [dim * dim]
+    std::vector<float> attn_wv;   // [dim * dim]
+    std::vector<float> attn_wo;   // [dim * dim]
+
+    // LayerNorm 2
+    std::vector<float> ln2_gamma;
+    std::vector<float> ln2_beta;
+
+    // MLP weights
+    std::vector<float> mlp_w1;    // [dim * hidden_dim]
+    std::vector<float> mlp_w2;    // [hidden_dim * dim]
 };
 
-// ------------------------------------------------------------
-// 3. Define ClipModel AFTER the above
-// ------------------------------------------------------------
+// ============================================================================
+// CLIP Model
+// ============================================================================
+
 struct ClipModel {
     ClipWeights weights;
     std::vector<ClipTransformerBlock> blocks;
-    int num_layers = 24;
+    int num_layers = 12;   // SD1.5 uses CLIP ViT-L/14 (12 layers)
 };
 
-// ------------------------------------------------------------
-// 4. Public CLIP API
-// ------------------------------------------------------------
+// ============================================================================
+// Public API
+// ============================================================================
+
 bool sd_clip_init(const std::string& model_dir);
 void sd_clip_free();
 
-std::vector<int> sd_clip_tokenize(const std::string& text);
+std::vector<int>   sd_clip_tokenize(const std::string& text);
 std::vector<float> sd_clip_encode(const std::string& text);
 
-const ClipModel& sd_clip_get_model();
+const ClipModel&   sd_clip_get_model();
+const ClipWeights& sd_clip_get_weights();

@@ -43,7 +43,7 @@ set_target_properties(ggml PROPERTIES
 # ---------------------------------------------------------
 # Stable Diffusion engine (your C++ implementation)
 # ---------------------------------------------------------
-add_library(sd_engine
+add_library(sd
         SHARED
         sd/sd_engine.cpp
         sd/sd_clip.cpp
@@ -55,7 +55,7 @@ add_library(sd_engine
 )
 
 # Link ggml into SD engine
-target_link_libraries(sd_engine ggml)
+target_link_libraries(sd log atomic m ggml)
 
 # ---------------------------------------------------------
 # Android log library
@@ -69,6 +69,6 @@ target_link_libraries(
         native-lib
         llama
         ggml
-        sd_engine
+        sd
         ${log-lib}
 )

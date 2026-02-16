@@ -14,14 +14,13 @@ object NetworkUtils {
 
     fun getLocalIpAddress(): String {
         return try {
-            java.net.NetworkInterface.getNetworkInterfaces().toList().forEach { intf ->
-                intf.inetAddresses.toList().forEach { addr ->
-                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
-                        return addr.hostAddress
-                    }
-                }
-            }
-            "0.0.0.0"
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return "0.0.0.0"
+
+           interfaces.toList()
+               .flatMap { it.inetAddresses.toList() }
+               .firstOrNull { !it.isLoopbackAddress && it is java.net.Inet4Address }
+               ?.hostAddress
+               ?: "0.0.0.0"
         } catch (e: Exception) {
             "0.0.0.0"
         }

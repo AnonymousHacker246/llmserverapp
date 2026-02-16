@@ -4,6 +4,7 @@ import com.example.llmserverapp.core.logging.LogBuffer
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
 import android.util.Base64
+import com.example.llmserverapp.core.models.ModelType
 
 class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
@@ -134,6 +135,45 @@ class LocalHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
                 return newFixedLengthResponse(responseJson.toString())
             }
+
+// -----------------------------
+// SD TEST: /sd_test
+// -----------------------------
+            "/sd_test" -> {
+                if (ServerController.loadedModelType != ModelType.StableDiffusion) {
+                    return newFixedLengthResponse("Stable Diffusion is not loaded")
+                }
+
+                val prompt = "black silhouette of a character, strong outline, no interior detail"
+                val steps = 20
+                val guidance = 7.5f
+
+                val start = System.currentTimeMillis()
+
+                val rgba = try {
+                    StableDiffusionBridge.sdGenerate(prompt, steps, guidance)
+                        ?: return newFixedLengthResponse("SD generation failed (null bytes)")
+                } catch (e: Exception) {
+                    LogBuffer.error("SD test generation failed: ${e.message}", "MODEL")
+                    return newFixedLengthResponse("Error: ${e.message}")
+                }
+
+                val durationMs = System.currentTimeMillis() - start
+
+                // Convert raw RGBA → PNG
+                val png = ImageUtils.rgbaToPng(rgba, 512, 512)
+
+                val response = newFixedLengthResponse(
+                    Response.Status.OK,
+                    "image/png",
+                    png.inputStream(),
+                    png.size.toLong()
+                )
+
+                response.addHeader("X-Generation-Time", durationMs.toString())
+                return response
+            }
+
 
             // -----------------------------
             // UNKNOWN

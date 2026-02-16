@@ -6,6 +6,7 @@ import android.content.Context
 import com.example.llmserverapp.NetworkUtils.getLocalIpAddress
 import com.example.llmserverapp.core.logging.LogBuffer
 import com.example.llmserverapp.core.models.ModelManager
+import com.example.llmserverapp.core.models.ModelType
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +36,12 @@ object ServerController {
     // -----------------------------
     var llmModelPath: String? = null
     var sdModelPath: String? = null
+
+    // -----------------------------
+// Active Model Type
+// -----------------------------
+    var loadedModelType: ModelType? = null
+
 
     var modelPath: String?
         get() = llmModelPath

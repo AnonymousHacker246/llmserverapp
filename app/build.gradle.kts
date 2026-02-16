@@ -72,6 +72,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.gson)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -80,6 +81,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.foundation)
+    implementation(libs.androidx.work.runtime.ktx)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.material.icons.extended)
     implementation(libs.androidx.navigation.compose)

@@ -46,12 +46,14 @@ Java_com_example_llmserverapp_StableDiffusionBridge_sdGenerate(
         return nullptr;
     }
 
+    // Create Java byte[] of EXACT size
     jsize len = static_cast<jsize>(img.rgba.size());
     jbyteArray arr = env->NewByteArray(len);
     if (!arr) {
         return nullptr;
     }
 
+    // Copy RGBA bytes into Java array
     env->SetByteArrayRegion(
             arr,
             0,

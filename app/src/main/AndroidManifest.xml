@@ -39,6 +39,7 @@
         <service
             android:name=".core.services.DownloadService"
             android:exported="false"
+            android:process=":download"
             android:foregroundServiceType="dataSync" />
 
     </application>

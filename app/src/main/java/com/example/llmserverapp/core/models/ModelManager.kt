@@ -1,10 +1,19 @@
 package com.example.llmserverapp.core.models
 
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.example.llmserverapp.AppScope
 import com.example.llmserverapp.LlamaBridge
 import com.example.llmserverapp.ServerController
 import com.example.llmserverapp.ServerController.settings
+import com.example.llmserverapp.StableDiffusionBridge
 import com.example.llmserverapp.core.logging.LogBuffer
+import com.example.llmserverapp.core.services.DownloadProgressBus
+import com.example.llmserverapp.core.services.DownloadWorker
+import com.example.llmserverapp.core.services.ModelNotificationManager
+import com.google.gson.Gson
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +24,21 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
+
+data class ModelFile(
+    val name: String,
+    val url: String,
+    var size: Long = 0L,
+    var downloaded: Boolean = false
+)
+
+data class ModelEntry(
+    val id: String,
+    val name: String,
+    val type: String,   // "llama" or "sd"
+    val version: Int,
+    val files: List<ModelFile>
+)
 
 enum class ModelStatus {
     NotDownloaded,
@@ -41,13 +65,6 @@ data class ModelDescriptor(
     val type: ModelType
 )
 
-data class SdPart(
-    val name: String,
-    val fileName: String,
-    val url: String,
-    var sizeBytes: Long = 0L
-)
-
 object ModelManager {
 
     private val scope = AppScope.io
@@ -58,47 +75,47 @@ object ModelManager {
     private var loadedModelId: String? = null
     private var didInitialRefresh = false
 
-    // ---- SD bundle parts ----
-    // Logical steps: 3 (CLIP, UNet, VAE)
-    // Physical files: 4 (CLIP, UNet part-aa, UNet part-ab, VAE)
-    private val sdParts = listOf(
-        SdPart(
-            name = "CLIP",
-            fileName = "clip_weights.bin",
-            url = "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/clip_weights.bin",
-        ),
-        SdPart(
-            name = "UNet Part1",
-            fileName = "unet_weights.bin.part-aa",
-            url = "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/unet_weights.bin.part-aa",
-        ),
-        SdPart(
-            name = "UNet Part2",
-            fileName = "unet_weights.bin.part-ab",
-            url = "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/unet_weights.bin.part-ab",
-        ),
-        SdPart(
-            name = "VAE",
-            fileName = "vae_weights.bin",
-            url = "https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/vae_weights.bin",
-        )
-    )
+    private val modelEntries = mutableListOf<ModelEntry>()
 
-    fun getSdModelDir(): File {
-        return File(ServerController.appContext.filesDir, "sd")
+    private val notificationJobs = mutableMapOf<String, Job>()
+
+    private fun startNotificationLoop(modelId: String, modelName: String) {
+        // Cancel old loop if exists
+        notificationJobs[modelId]?.cancel()
+
+        val job = scope.launch {
+            while (isActive) {
+                val descriptor = _models.value.firstOrNull { it.id == modelId }
+                val pct = descriptor?.progress ?: 0f
+
+                ModelNotificationManager.showProgress(modelId, modelName, pct)
+
+                delay(750) // smooth, but not spammy
+            }
+        }
+
+        notificationJobs[modelId] = job
     }
 
-    fun areSdWeightsReady(): Boolean {
-        val dir = getSdModelDir()
-        // After merge, we care about final files:
-        // clip_weights.bin, unet_weights.bin, vae_weights.bin
-        val clip = File(dir, "clip_weights.bin").exists()
-        val unet = File(dir, "unet_weights.bin").exists()
-        val vae = File(dir, "vae_weights.bin").exists()
-        return clip && unet && vae
+    private fun stopNotificationLoop(modelId: String) {
+        notificationJobs[modelId]?.cancel()
+        notificationJobs.remove(modelId)
     }
 
-    // ---- Pretty size ----
+
+    suspend fun loadModelsFromRemote(url: String) {
+        val json = URL(url).readText()
+        val list = Gson().fromJson(json, Array<ModelEntry>::class.java)
+        modelEntries.clear()
+        modelEntries.addAll(list)
+    }
+
+    fun getEntryById(id: String): ModelEntry? =
+        modelEntries.firstOrNull { it.id == id }
+
+    fun getModelDir(id: String): File =
+        File(ServerController.appContext.filesDir, "models/$id")
+
     fun prettySize(bytes: Long): String {
         val kb = 1024L
         val mb = kb * 1024
@@ -112,230 +129,186 @@ object ModelManager {
         }
     }
 
-    // ---- Inference (LLaMA) ----
+    suspend fun fetchRemoteFileSize(url: String): Long {
+        return try {
+            val conn = URL(url).openConnection()
+            conn.connect()
+            conn.contentLengthLong.takeIf { it > 0 } ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
     suspend fun runInference(prompt: String): String {
-        val loaded = _models.value.firstOrNull { it.status == ModelStatus.Loaded && it.type == ModelType.Llama }
+        _models.value.firstOrNull { it.status == ModelStatus.Loaded && it.type == ModelType.Llama }
             ?: return "No LLaMA model loaded."
 
-        val settings = ServerController.settings.value
+        val s = settings.value
 
         return try {
             LlamaBridge.generate(
                 prompt,
-                settings.temperature,
-                settings.maxTokens,
-                settings.threads
+                s.temperature,
+                s.maxTokens,
+                s.threads
             )
         } catch (e: Exception) {
             "Inference failed: ${e.message}"
         }
     }
 
-    // ---- UNet merge ----
-    private fun mergeUnetParts(sdDir: File) {
-        val part1 = File(sdDir, "unet_weights.bin.part-aa")
-        val part2 = File(sdDir, "unet_weights.bin.part-ab")
-        val output = File(sdDir, "unet_weights.bin")
-
-        if (!part1.exists() || !part2.exists()) {
-            LogBuffer.error("UNet merge failed: missing part files", tag = "MODEL")
-            return
-        }
-
-        FileOutputStream(output).use { out ->
-            listOf(part1, part2).forEach { part ->
-                part.inputStream().use { inp ->
-                    inp.copyTo(out)
-                }
-            }
-        }
-
-        // Cleanup
-        part1.delete()
-        part2.delete()
-
-        LogBuffer.info("UNet parts merged into unet_weights.bin ✓", tag = "MODEL")
-    }
-
-    // Map physical index -> logical step index
-    // 0 -> CLIP (0)
-    // 1,2 -> UNet (1)
-    // 3 -> VAE (2)
-    private fun logicalIndexForPhysical(i: Int): Int {
-        return when (i) {
-            0 -> 0
-            1, 2 -> 1
-            3 -> 2
-            else -> 2
-        }
-    }
-
-    // ---- Refresh models ----
     fun refreshModels(force: Boolean = false) {
         if (!force && didInitialRefresh) return
         didInitialRefresh = true
 
         scope.launch {
-            val ctx = ServerController.appContext
+            loadModelsFromRemote("https://github.com/AnonymousHacker246/llmserverapp/releases/download/v1.0/models.json")
 
-            // LLaMA models
-            val llamaUrls = listOf(
-                "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-                "https://huggingface.co/TheBloke/CodeLlama-7B-GGUF/resolve/main/codellama-7b.Q5_K_S.gguf"
-            )
+            val descriptors = modelEntries.map { entry ->
+                val dir = getModelDir(entry.id)
+                dir.mkdirs()
 
-            val llamaDescriptors = llamaUrls.map { url ->
-                val meta = fetchModelMetadata(url)
-                val file = File(ctx.filesDir, meta.fileName)
+                val allFilesExist = entry.files.all { mf ->
+                    val f = File(dir, mf.name)
+                    f.exists() && f.length() > 0
+                }
 
-                val status =
-                    if (file.exists() && file.length() == meta.sizeBytes)
-                        ModelStatus.Downloaded
-                    else
-                        ModelStatus.NotDownloaded
+                val status = when {
+                    loadedModelId == entry.id -> ModelStatus.Loaded
+                    allFilesExist -> ModelStatus.Downloaded
+                    else -> ModelStatus.NotDownloaded
+                }
+
+                entry.files.forEach { mf ->
+                    if (mf.size == 0L) {
+                        mf.size = fetchRemoteFileSize(mf.url)
+                    }
+                }
+
+                val sizeBytes = entry.files.sumOf { mf ->
+                    val f = File(dir, mf.name)
+                    if (f.exists()) f.length() else mf.size
+                }
+
+                val type = when (entry.type.lowercase()) {
+                    "llama" -> ModelType.Llama
+                    "sd", "stablediffusion" -> ModelType.StableDiffusion
+                    else -> ModelType.Llama
+                }
 
                 ModelDescriptor(
-                    id = meta.fileName,
-                    prettyName = meta.fileName,
-                    fileName = meta.fileName,
-                    downloadUrl = url,
-                    localPath = file.absolutePath,
+                    id = entry.id,
+                    prettyName = entry.name,
+                    fileName = entry.id,
+                    downloadUrl = "",
+                    localPath = dir.absolutePath,
                     status = status,
-                    sizeBytes = meta.sizeBytes,
-                    type = ModelType.Llama
+                    sizeBytes = sizeBytes,
+                    type = type
                 )
             }
 
-            // Fetch metadata for each SD part dynamically
-            for (part in sdParts) {
-                val meta = fetchModelMetadata(part.url)
-                part.sizeBytes = meta.sizeBytes
-            }
-
-            // SD bundle parent
-            val sdDir = getSdModelDir()
-            sdDir.mkdirs()
-
-            val sdTotalSize = sdParts.sumOf { it.sizeBytes }
-            val sdAllExist = areSdWeightsReady()
-
-            val sdStatus = when {
-                sdAllExist -> ModelStatus.Downloaded
-                else -> ModelStatus.NotDownloaded
-            }
-
-            val sdDescriptor = ModelDescriptor(
-                id = "sd15",
-                prettyName = "Stable Diffusion 1.5",
-                fileName = "sd15",
-                downloadUrl = "",
-                localPath = sdDir.absolutePath,
-                status = sdStatus,
-                sizeBytes = sdTotalSize,
-                type = ModelType.StableDiffusion
-            )
-
-            val merged = (llamaDescriptors + sdDescriptor).map { desc ->
-                if (desc.id == loadedModelId)
-                    desc.copy(status = ModelStatus.Loaded)
-                else desc
-            }
-
-            _models.value = merged
+            _models.value = descriptors
         }
     }
 
-    // ---- Download SD bundle ----
-    fun downloadModel(id: String) {
-        if (id == "sd15") {
-            downloadSdBundle()
-            return
-        }
-
-        // Normal LLaMA download
-        downloadSingleFileModel(id)
+    // Called by DownloadWorker after a file finishes
+    fun onFileDownloadComplete(modelId: String) {
+        val entry = getEntryById(modelId) ?: return
+        checkIfModelFullyDownloaded(entry)
     }
 
-    private fun downloadSdBundle() {
-        scope.launch {
-            val sdDir = getSdModelDir()
-            sdDir.mkdirs()
+    private fun checkIfModelFullyDownloaded(entry: ModelEntry) {
+        val dir = getModelDir(entry.id)
+        val allFilesExist = entry.files.all { mf ->
+            val f = File(dir, mf.name)
+            f.exists() && f.length() > 0
+        }
+
+        if (allFilesExist) {
+            stopNotificationLoop(entry.id)
+            DownloadProgressBus.clear(entry.id)
 
             _models.update { list ->
                 list.map {
-                    if (it.id == "sd15") it.copy(status = ModelStatus.Downloading, progress = 0f)
+                    if (it.id == entry.id)
+                        it.copy(status = ModelStatus.Downloaded, progress = 1f)
                     else it
                 }
             }
+            ModelNotificationManager.showComplete(entry.id, entry.name)
+        }
+    }
 
-            val totalSize = sdParts.sumOf { it.sizeBytes }
-            val partProgress = LongArray(sdParts.size) { 0L }
-            val logicalParts = 3 // CLIP, UNet, VAE
-            var completedPhysicalParts = 0
+    // ---- Multi-file download via WorkManager + DownloadProgressBus ----
 
-            try {
-                sdParts.forEachIndexed { index, part ->
-                    val temp = File(sdDir, part.fileName + ".tmp")
-                    val final = File(sdDir, part.fileName)
+    fun downloadModel(entry: ModelEntry) {
+        val modelId = entry.id
+        val modelDir = getModelDir(modelId)
+        modelDir.mkdirs()
 
-                    downloadSingleFile(
-                        url = part.url,
-                        tempFile = temp,
-                        finalFile = final,
-                        expectedSize = part.sizeBytes
-                    ) { bytesDownloaded ->
-                        partProgress[index] = bytesDownloaded
-                        val totalDownloaded = partProgress.sum()
+        _models.update { list ->
+            list.map {
+                if (it.id == modelId) it.copy(status = ModelStatus.Downloading, progress = 0f)
+                else it
+            }
+        }
 
-                        val progress = (totalDownloaded.toFloat() / totalSize.toFloat())
-                            .coerceIn(0f, 1f)
+        // Observe progress for this model
+        scope.launch {
+            DownloadProgressBus.progress.collect { modelMap ->
+                val fileMap = modelMap[modelId] ?: return@collect
+                val entryLocal = getEntryById(modelId) ?: return@collect
 
-                        val logicalIndex = logicalIndexForPhysical(index)
-                        val pretty = "Stable Diffusion 1.5 (${logicalIndex + 1}/$logicalParts)"
+                val totalBytes = entryLocal.files.sumOf { it.size }
+                if (totalBytes <= 0) return@collect
 
-                        _models.update { list ->
-                            list.map {
-                                if (it.id == "sd15")
-                                    it.copy(
-                                        progress = progress,
-                                        prettyName = pretty
-                                    )
-                                else it
-                            }
-                        }
-                    }
-
-                    completedPhysicalParts++
+                val downloadedBytes = entryLocal.files.sumOf { mf ->
+                    val pct = fileMap[mf.name] ?: 0f
+                    (mf.size * pct).toLong()
                 }
 
-                // All physical parts downloaded, now merge UNet
-                mergeUnetParts(sdDir)
+                val overall = downloadedBytes.toFloat() / totalBytes.toFloat()
+                updateModelProgress(modelId, overall)
+            }
+        }
 
-                _models.update { list ->
-                    list.map {
-                        if (it.id == "sd15")
-                            it.copy(
-                                status = ModelStatus.Downloaded,
-                                progress = 1f,
-                                prettyName = "Stable Diffusion 1.5"
-                            )
-                        else it
-                    }
-                }
-            } catch (e: Exception) {
-                LogBuffer.error("SD bundle download failed: ${e.message}", tag = "MODEL")
-                _models.update { list ->
-                    list.map {
-                        if (it.id == "sd15")
-                            it.copy(status = ModelStatus.Failed, progress = null)
-                        else it
-                    }
-                }
+        // Schedule each file as a WorkManager job
+        entry.files.forEach { file ->
+            val finalPath = File(modelDir, file.name).absolutePath
+            val tempPath = "$finalPath.tmp"
+
+            val data = workDataOf(
+                "url" to file.url,
+                "temp" to tempPath,
+                "final" to finalPath,
+                "modelId" to modelId
+            )
+
+            val req = OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setInputData(data)
+                .build()
+
+            WorkManager.getInstance(ServerController.appContext)
+                .enqueue(req)
+        }
+        startNotificationLoop(modelId, entry.name)
+    }
+
+    private fun updateModelProgress(id: String, progress: Float) {
+        val clamped = progress.coerceIn(0f, 1f)
+
+        _models.update { list ->
+            list.map {
+                if (it.id == id) it.copy(progress = clamped)
+                else it
             }
         }
     }
 
-    // ---- Single file downloader (LLaMA models) ----
+    // ---- Legacy single-file downloader (kept for GGUF etc., unchanged) ----
+    // (You can delete this if you no longer need it.)
+
     private fun downloadSingleFileModel(id: String) {
         scope.launch {
             _models.update { list ->
@@ -349,9 +322,6 @@ object ModelManager {
             val url = model.downloadUrl
 
             try {
-                val ctx = ServerController.appContext
-                val meta = fetchModelMetadata(url)
-
                 val finalFile = File(model.localPath)
                 finalFile.parentFile?.mkdirs()
 
@@ -365,7 +335,7 @@ object ModelManager {
                     }
                 }
 
-                val totalBytes = meta.sizeBytes
+                val totalBytes = model.sizeBytes
                 val input = connection.getInputStream()
                 val output = FileOutputStream(tempFile, existingBytes > 0)
 
@@ -375,8 +345,9 @@ object ModelManager {
 
                 val progressJob = scope.launch {
                     while (isActive) {
-                        val progress = (downloaded.toFloat() / totalBytes.toFloat())
-                            .coerceIn(0f, 1f)
+                        val progress = if (totalBytes > 0)
+                            (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                        else 0f
 
                         _models.update { list ->
                             list.map {
@@ -425,71 +396,56 @@ object ModelManager {
         }
     }
 
-    // ---- Low-level file downloader (SD parts) ----
-    private suspend fun downloadSingleFile(
-        url: String,
-        tempFile: File,
-        finalFile: File,
-        expectedSize: Long,
-        onProgress: (Long) -> Unit
-    ) {
-        val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+    // ---- Load / unload / benchmark (unchanged) ----
 
-        val connection = URL(url).openConnection().apply {
-            if (existingBytes > 0) {
-                setRequestProperty("Range", "bytes=$existingBytes-")
-            }
-        }
-
-        val input = connection.getInputStream()
-        val output = FileOutputStream(tempFile, existingBytes > 0)
-
-        val buffer = ByteArray(8 * 1024)
-        var downloaded = existingBytes
-        var read: Int
-
-        while (input.read(buffer).also { read = it } != -1) {
-            output.write(buffer, 0, read)
-            downloaded += read
-            onProgress(downloaded)
-        }
-
-        output.flush()
-        output.close()
-        input.close()
-
-        if (tempFile.exists()) {
-            tempFile.renameTo(finalFile)
-        }
-    }
-
-    // ---- Load model ----
     fun loadModel(id: String) {
-        val model = _models.value.firstOrNull { it.id == id } ?: return
+        val descriptor = _models.value.firstOrNull { it.id == id } ?: return
+        val entry = modelEntries.firstOrNull { it.id == id }
 
-        when (model.type) {
+        when (descriptor.type) {
             ModelType.Llama -> {
-                val file = File(model.localPath)
-                if (!file.exists()) {
-                    LogBuffer.error("Model file missing: ${model.localPath}", tag = "MODEL")
+                if (entry == null || entry.files.isEmpty()) {
+                    LogBuffer.error("No ModelEntry or files for LLaMA model $id", tag = "MODEL")
                     return
                 }
 
-                val result = LlamaBridge.loadModel(model.localPath, settings.value.threads)
+                val dir = getModelDir(id)
+                val modelFile = File(dir, entry.files.first().name)
+                if (!modelFile.exists()) {
+                    LogBuffer.error("Model file missing: ${modelFile.absolutePath}", tag = "MODEL")
+                    return
+                }
+
+                val result = LlamaBridge.loadModel(modelFile.absolutePath, settings.value.threads)
                 if (result == 0L) {
                     LogBuffer.error("Native loadModel returned 0", tag = "MODEL")
                     return
                 }
 
                 loadedModelId = id
-                ServerController.modelPath = model.localPath
-                ServerController.setLoadedModel(model.prettyName)
+                ServerController.modelPath = modelFile.absolutePath
+                ServerController.setLoadedModel(descriptor.prettyName)
+
+                ModelNotificationManager.cancel(id)
             }
 
             ModelType.StableDiffusion -> {
-                // SD engine loads all weights later via sd_init()
+                val modelDir = getModelDir(id)
+
+                val handle = StableDiffusionBridge.sdLoadModel(modelDir.absolutePath)
+                if (handle == 0L) {
+                    LogBuffer.error("Stable Diffusion failed to initialize", tag = "MODEL")
+                    return
+                }
+
                 loadedModelId = id
-                LogBuffer.info("SD bundle marked as loaded", tag = "MODEL")
+                ServerController.modelPath = modelDir.absolutePath
+                ServerController.loadedModelType = ModelType.StableDiffusion
+                ServerController.setLoadedModel(descriptor.prettyName)
+
+                ModelNotificationManager.cancel(id)
+
+                LogBuffer.info("Stable Diffusion initialized ✓", tag = "MODEL")
             }
         }
 
@@ -497,7 +453,7 @@ object ModelManager {
             list.map {
                 when {
                     it.id == id -> it.copy(status = ModelStatus.Loaded)
-                    it.status == ModelStatus.Loaded && it.type == model.type ->
+                    it.status == ModelStatus.Loaded && it.type == descriptor.type ->
                         it.copy(status = ModelStatus.Downloaded)
                     else -> it
                 }
